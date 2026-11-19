@@ -40,9 +40,11 @@ The 119 assertions below all passed in a **disposable diagnostic copy** where th
 | Usage idempotency | One event for a repeated request | One event for repeated key; changed payload and prompt content denied | PASS† | pgTAP 119/119 |
 | Invoice idempotency | One line item | Repeated invoice call leaves one line item at exact rate snapshot | PASS† | pgTAP 119/119 |
 | Checked-in migration chain | Apply from empty database | Fails in migration 001 before 002/003 | FAIL | Local `supabase start`; SQLSTATE 42601 in `private.can_access_hse()` |
-| Exact-chain GitHub Actions | Static and database jobs green | Baseline database job fails at the same migration 001 parse error | FAIL | [Actions run 44563250811](https://github.com/elmasry-platform/sentriq/actions/runs/44563250811) |
+| Exact-chain GitHub Actions | Static and database jobs green | Static job passed; database job failed in `supabase start` at migration 001, before 002/003 or pgTAP. The always-run stop step succeeded. | FAIL | [Actions run 44582676187](https://github.com/elmasry-platform/sentriq/actions/runs/44582676187) |
 
-† Diagnostic copy only. Local evidence: Supabase CLI 3.2.0 and Docker 29.4.0; disposable `db reset` applied migrations 001–003 in the copied project and `supabase test db --local` reported `All tests successful`, `Files=1, Tests=119`, `Result: PASS`. The exact checked-in project was also attempted locally; its `supabase start` stopped at migration 001 with `syntax error at end of input` before pgTAP could start. The diagnostic copy and local stack were stopped afterward. No hosted Supabase project was linked.
+† Diagnostic copy only. Local evidence: Supabase CLI 3.2.0 and Docker 29.4.0; disposable `db reset` applied migrations 001–003 in the copied project and `supabase test db --local` reported `All tests successful`, `Files=1, Tests=119`, `Result: PASS`. The exact checked-in project was also attempted locally; its `supabase start` stopped at migration 001 with `syntax error at end of input` before pgTAP could start. GitHub Actions run [44582676187](https://github.com/elmasry-platform/sentriq/actions/runs/44582676187) reproduced that failure on commit `83cc19beb2f46a0bb062274f34d933db2de5fedf`; its static job passed and the database test step was skipped. The diagnostic copy and local stack were stopped afterward. No hosted Supabase project was linked.
+
+Phase 2 implementation commit: `83cc19beb2f46a0bb062274f34d933db2de5fedf` on `codex/platform-entitlements-rbac`.
 
 The static contract check passed with 31 markers, guarded policy checks, service-role-only usage recording, and a synchronized 119 assertion plan. `git diff --check` passed; Git emitted only line-ending normalization notices.
 
