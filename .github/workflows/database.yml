@@ -27,6 +27,9 @@ jobs:
         run: supabase db reset --local
       - name: Run database authorization and workflow tests
         run: supabase test db --local
+      - name: Verify concurrent quota, billing, and invitation acceptance
+        shell: pwsh
+        run: ./scripts/test_database_concurrency.ps1
       - name: Stop local Supabase
         if: always()
         run: supabase stop --no-backup

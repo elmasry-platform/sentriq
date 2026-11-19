@@ -1,88 +1,78 @@
 # SENTRIQ database compatibility contract
 
-This document records the required database behavior and the data contract exposed by the current UI. The original schema is in `supabase/migrations/202611190001_sentriq_hse.sql`; follow-on commercial/RBAC hardening is in `supabase/migrations/202611190002_commercial_entitlements_rbac.sql` and `supabase/migrations/202611190003_security_remediation.sql`. No migration has been applied to a hosted project.
+This is a Supabase/PostgreSQL implementation for the shared SENTRIQ platform and its HSE module. The active schema is delivered through four ordered migrations: `202611190001_sentriq_hse.sql`, `202611190002_commercial_entitlements_rbac.sql`, `202611190003_security_remediation.sql`, and `202611200001_database_stabilization.sql`. No migration has been applied to a hosted project.
 
-## Scope and inspected sources
+## Sources and scope
 
-- UI: [`elmasry-platform/sentriq_ui`](https://github.com/elmasry-platform/sentriq_ui/tree/main), branch `main`.
-- The dashboard service reads `data/mock-data.json`; the visible demo roles and record shapes are in `lib/sentriq/dashboard-service.ts`.
-- Form authoring types and local repository behavior are in `lib/forms/domain.ts` and `lib/forms/repository.ts`.
-- The local checkout for this task is `elmasry-platform/sentriq`, separate from the UI repository.
-- The supplied V3.3.1 archive describes a proposed Supabase/PostgreSQL architecture and Gate A preparation. Its recommendations are reference material; they do not override the owner's requirements below or constitute approved production migrations.
+- The UI reference is [`elmasry-platform/sentriq_ui`](https://github.com/elmasry-platform/sentriq_ui/tree/main), branch `main`. Its dashboard currently reads mock JSON and its form repository uses browser `localStorage`.
+- The supplied V3.3.1 archive is architectural reference material, not an instruction to override the owner's authority requirements or a record of approved production migrations.
+- This repository implements database schemas and RPCs only. The UI repository, a trusted Laravel/API/Edge Function server, and external providers are not changed here.
 
-## Required tenant and access model
+## Shared platform and HSE data model
 
-Every company is a tenant. Every business record, including sites, forms, inspections, findings, corrective actions, follow-ups, and evidence metadata, must carry a tenant identifier. A company member can only read or change records belonging to that company and within their assigned site, organization scope, function, or task.
+The shared schemas cover tenants, sites, memberships, platform operators, authorization, organization units, audit, modules, features, plans, subscriptions, entitlement grants, usage, invoices, invoice lines, and payments. HSE records cover forms, immutable published form versions, inspections, reviewer history, findings, corrective actions, follow-ups, and evidence metadata. HSE evidence bytes belong in private object storage; PostgreSQL holds validated metadata and object keys. Operations and future modules can add independent domain schemas while reusing tenant, identity, authorization, audit, and entitlement primitives.
 
-| Actor | Scope and authority |
+Tenant-owned rows and cross-tenant references use tenant identifiers and composite relationships where implemented. Authorization derives tenant access from the authenticated identity and active membership; a browser-provided tenant ID alone is never proof of access.
+
+## Authority and scope intersections
+
+| Principal | Database authority |
 |---|---|
-| Platform owner (the user) | Full platform and cross-company control, including access to all tenant data and lifecycle controls. Sole actor allowed to create or deactivate subowners. |
-| Subowner | Same platform-wide operational authority as the owner. Cannot create or deactivate subowners, including itself or the owner. |
-| Company superadmin | One tenant only. Can manage company users and set their allowed functions, sites, visibility, and task assignments. Cannot grant authority outside its own tenant or manage platform owners. |
-| Company admin | One tenant only. Gets a permission set selected by that tenant's superadmin. Can exercise those permissions but cannot change user permissions, roles, or access grants. |
-| Employee | One tenant only. Gets only the functions, sites, records, and tasks assigned by the tenant superadmin. |
+| Platform Owner | Cross-company platform and tenant operations; sole authority to create, reactivate, deactivate, or manage Subowners. |
+| Platform Subowner | Cross-company operational authority; cannot create/reactivate/deactivate/manage any Subowner or deactivate itself. |
+| Company Superadmin | Membership and business configuration within its own active tenant; no platform/operator or internal pricing authority. |
+| Company Admin | Executes explicitly granted business permissions; cannot grant permissions, scopes, roles, or management levels. |
+| Employee | Assigned permissions within active tenant and applicable scopes. |
 
-Enforce these rules in the database/API authorization layer, not only by hiding UI navigation. The platform owner and subowner are platform-level principals, not tenant memberships. Company superadmins/admins/employees use tenant memberships. Tenant role grants must not be able to create platform-level access.
+Platform operators are separate from company memberships. Membership management level (`company_superadmin`, `company_admin`, `employee`) stays separate from multiple functional roles. Functional roles define reusable permissions and cannot confer company-management or platform authority.
 
-The V3.3.1 proposal gives platform admins global platform capabilities but explicitly withholds tenant data reads. That conflicts with the owner's cross-company access requirement. Before using that design, change its platform authorization rule and test owner/subowner access and the owner-only subowner lifecycle boundary. Do not silently map `platform_admin` to the owner requirement.
+An HSE authorization decision requires an active tenant and membership, effective HSE entitlement, a direct or role permission, and the applicable site, organization-unit, and task checks. Role-site and role-organization-unit bindings belong to a membership-role assignment; they do not replace each membership's independent site/org-unit access. A task assignment cannot bypass those boundaries. Expired/revoked role assignments and scope bindings stop authorizing access synchronously. Organization-unit scope is exact; descendants do not inherit automatically.
 
-The migration implements a separate platform operator table for `owner` and `subowner`, and gives the two operators cross-tenant access. Only the owner can add or deactivate a subowner. Platform operators create companies and designate the initial company superadmin. The tenant-domain registry is operator-only; a verified domain is metadata and does not itself grant data access.
+## Current UI data contract
 
-## UI data contract to persist
-
-| UI concept / field shape | Database representation |
+| UI concept | Database/API representation |
 |---|---|
-| `workspaces` (UI name for companies), `industryLabel` | `core.tenants` (or equivalent company table), with stable ID, name, industry, status, timestamps. |
-| `sites`: `id`, `name`, `code`, `city` | `core.sites`, tenant-scoped with a unique `(tenant_id, code)`. Validate that every linked site belongs to the same tenant as the record. |
-| `users`: `id`, `displayName`, `email` | Identity-provider user plus SENTRIQ principal/profile; do not store passwords in the application schema. |
-| `workspaceId`, `siteIds`, `role` | Tenant membership, scoped role/permission assignments, site grants, and optional organization scope. Prefer permission keys and scope rows over hard-coded UI role checks. |
-| Forms: bilingual title/help, sections, questions, validation, config, conditions, scoring | Form definition plus immutable published-version snapshots. Preserve the UI's nested JSON structures (JSONB is suitable for config/snapshots); keep identity, tenant, status, revision, and ownership as typed columns. |
-| Inspections: `templateId`, `templateVersion`, `siteId`, `inspectorId`, `status`, `currentStage`, `answers`, `revision`, timestamps | Tenant/site-scoped inspection instance referencing a specific immutable form version. Answers can be JSONB keyed by stable question IDs. Keep workflow status, revision, actor, and timestamps typed and auditable. |
-| Review history: stage, decision, actor, reason, revision | Append-only inspection review/transition records. The stage names in the demo (`reviewer_1`, `reviewer_2`, `final_reviewer`) are workflow configuration, not global database roles. |
-| Findings: inspection/question link, priority, status | Tenant-scoped finding rows with a same-tenant inspection reference. `question_id` points into the inspection's immutable form-version snapshot. |
-| Actions: finding/inspection link, owner, priority, status, due dates, revision | Tenant/site-scoped corrective-action rows; owner must be an active member of that tenant. Track status changes in append-only history. |
-| Follow-ups: action, owner, due date, status, outcome | Child records of corrective actions, carrying tenant scope (directly or through a protected composite relationship). |
-| Evidence: filename, MIME type, byte size, status, linked record, uploader | File metadata table with tenant scope and storage object key. Store file bytes in object storage, not PostgreSQL. Enforce tenant checks on both metadata and signed file access. |
-| Audit events: actor, action, record type/ID, summary, time | Append-only audit table with tenant/platform scope, actor identity, target, and timestamp. Avoid storing tokens or unnecessary personal data in summaries. |
+| `workspaces`, `workspaceId`, `industryLabel` | `core.tenants`; serialize UUIDs as strings and map `workspaceId` in one API adapter. |
+| Sites (`id`, `name`, `code`, `city`) | `core.sites`; site references must belong to the same tenant as their parent record. |
+| Users (`id`, `displayName`, `email`) | Supabase Auth identity plus SENTRIQ membership/profile; application passwords are not stored in SENTRIQ schemas. |
+| `role`, `siteIds` | `role` maps to membership management level; `functionalRoles`, permissions and scopes are separate normalized fields. |
+| Forms | Typed ownership/status/revision plus JSONB bilingual content and immutable published snapshots. Preserve conditions, scoring, repeat groups and field configurations. |
+| Inspections | Tenant/site scoped, references the exact immutable published form version, stores answers as JSONB and workflow/revision/actor metadata as typed fields. |
+| Reviews, findings, actions, follow-ups | Append-only review/action history and tenant-safe references to the inspection/form version. Reviewer stage is workflow configuration, not a global database role. |
+| Evidence | Tenant-scoped metadata and private storage key; bytes remain in object storage. Validate tenant/site access for both metadata and signed object access. |
+| Audit | Append-only platform or tenant event with actor, target, time, and allowlisted field diffs. Avoid secrets and unnecessary personal data. |
 
-The UI's demo types use `workspaceId`; the database/API may call this `tenant_id`, but the adapter must map the naming consistently. IDs in the JSON demo are strings; database UUIDs are suitable if the API serializes them as strings. Preserve ISO-8601 timestamps and the listed status values at the API boundary or translate them in a single adapter.
+The UI currently uses one demo role per user; the database/API supports multiple functional roles. The adapter must preserve existing visible field shapes where needed while moving access checks to the server. Do not treat demo JSON IDs, browser filters, or UI navigation as authorization.
 
-## HSE-first modules and future ERP modules
+## Commercial access and confidentiality
 
-Build the shared identity, tenant, site, authorization, audit, and module-entitlement layer once. Put HSE-specific records under an HSE module boundary (forms, published versions, inspections, reviews, findings, corrective actions, follow-ups, evidence metadata). Future Operations or other modules can add their own tables without turning the shared identity model into HSE-only tables.
+HSE module access and HSE Copilot feature access are separate. Copilot requires active HSE module entitlement, active Copilot feature entitlement, a valid membership, the required functional permission, and applicable scopes. Platform-wide operational access does not bypass feature licensing.
 
-`core.modules`/tenant entitlements (or equivalent) should allow the platform owner to enable modules per company. Within HSE, company superadmins should assign granular capabilities such as form design, inspection execution, review stages, corrective-action ownership, closure review, and read-only audit access. The demo's ten roles are useful UI presets, but must not be the only authorization mechanism because the requirement is to configure function access per employee.
+Only Owner/Subowner can view internal plan rates, subscription snapshots, grant rates, usage billing, invoices, invoice lines, and payments. Company membership APIs expose only safe effective module/feature status for that tenant. Entitlements are evaluated synchronously against tenant, membership, module/feature, grant state and half-open dates, plan state, subscription state, and item periods. Active/trialing are the only effective subscription states. Past-due/suspended records do not hold the live subscription slot; canceled/expired records are terminal. Retired plans and globally disabled features/modules deny access.
 
-The migrations create shared `core`, `iam`, `audit`, `api`, and `private` schemas; HSE forms and published snapshots, inspections and review history, findings, corrective actions and updates, follow-ups, and evidence metadata; and normalized commercial entitlements, functional RBAC, invitations, scopes, and audit. `api.v_*` views expose workspace aliases and camel-case fields for a UI adapter. The UI still needs a live Supabase client adapter; today it uses static/local demo data.
+Legacy `core.tenant_entitlements` rows and their effective state/metadata remain traceable through the migration backfill. The old switch has no verified pricing history, so no historical monetary values are inferred. New plans must be explicitly priced and published; no production prices are seeded.
 
-## Compatibility gaps to close before a production migration
+## Invitations, audit and trusted server boundary
 
-1. The migration has not been applied to a Supabase project. It needs migration execution and security review before production use.
-2. The current dashboard's `getDashboard(workspaceId)` accepts an arbitrary workspace ID and filters mock data in application code. Replace it with authenticated API reads whose tenant scope is derived from the verified principal; never trust a browser-supplied tenant ID as authorization.
-3. The UI currently models one demo role per user plus `siteIds`; the API keeps `role` as the membership management level and adds `membershipLevel` and `functionalRoles`. The UI needs to adopt the normalized role collection.
-4. The demo has no explicit form version object in the dashboard `Inspection` type beyond `templateVersion`, while the form domain has published snapshots. The API must guarantee inspections retain the exact published snapshot they used.
-5. The demo includes tenant-less audit entries and evidence linked by a polymorphic record type/ID. Production data must always have an explicit tenant or platform scope and must validate polymorphic references before accepting writes.
-6. Owner/subowner lifecycle control is not represented in the demo role model and differs from the supplied archive's platform-admin data-access restriction.
-7. Provision the first owner after creating their Auth account by running the operator-only `private.bootstrap_platform_owner(auth_user_uuid)` function. Then call `api.create_tenant(name, industry_label, first_company_superadmin_auth_user_uuid)` as a platform operator. New tenants receive no paid module until an explicit subscription or grant is issued.
-8. Verify tenant domain ownership outside the database before setting a domain row to `verified`. Keep the `sentriq-hse-evidence` Storage bucket private and use object paths `tenant_uuid/site_uuid/file_name`.
-9. Invitations now have a hash-only, verified-email, expiring, revocable, single-use database lifecycle for Company Admin/Employee roles. Email delivery and invitations that create Company Superadmins remain outside scope.
+Invitation database RPCs are service-role-only. A future server must validate the bearer token through Supabase Auth, derive actor identity and verified email from that trusted response, and keep the service-role key server-side. The database stores a token hash, checks expiry/tenant/management level/email, prevents replay, and serializes acceptance and reinvitation. Invitations may create Company Admins or Employees only. Email delivery is not implemented.
 
-## Implementation note: branch `codex/platform-entitlements-rbac`
+Audit and business history are append-only where required. Ordinary authenticated hard deletes are revoked for memberships, role/scope assignments, commercial history, usage, invoice lines, payments, audit events, published versions, and HSE review/action history. Use status, revocation, or archival transitions.
 
-The live repository matched the earlier inventory: one initial migration; a single membership management role; direct permission grants without roles/org-unit scope; tenant-level module switches; generic INSERT/UPDATE audit only; no invitation lifecycle; and the documented initial-review transition mismatch. The relevant UI files were read from `elmasry-platform/sentriq_ui` on `main`: its dashboard consumes mock JSON, its form repository is browser-local storage, and form snapshots preserve bilingual JSON, conditions, scoring, repeat groups, and the 23 declared field types.
+## Supabase-specific and portable capabilities
 
-The follow-on migrations preserve the initial migration and existing `core.tenant_entitlements` rows, add plan/feature/subscription/grant/usage/invoice/payment tables and normalized multi-role RBAC, and tighten scope intersections, invitations, review transitions, audit, and hard-delete access. Migration 003 binds site and organization-unit scopes to membership-role assignments while retaining independent member scope grants; it also requires active module grants, hides internal commercial catalog data behind platform-operator RLS, removes authenticated access to internal authorization helpers, and expires stale invitations transactionally before a reinvite. Tenant `role` remains the management level for compatibility. HSE domain areas absent from current database/UI workflows remain planned rather than invented. The UI is not a live Supabase client, and no Copilot trusted server or payment/email provider exists; the trusted-server contract is documented in `supabase/README.md`.
+| Capability | Dependency |
+|---|---|
+| Tenant tables, foreign keys, checks, partial/unique indexes, JSONB, triggers, advisory locks, transaction semantics, security-definer functions | PostgreSQL behavior; these are broadly portable, subject to PostgreSQL version and extension availability. The project targets PostgreSQL 15. |
+| Auth identity and JWT context (`auth.users`, `auth.uid()`, `auth.role()`) | Supabase Auth schema/functions and request claim injection. A standalone Laravel/PostgreSQL deployment must supply an equivalent trusted identity/JWT adapter and replace these dependencies. |
+| `anon`, `authenticated`, `service_role` roles and PostgREST schema exposure | Supabase role and API behavior. Do not expose the `private` schema; only the configured API-facing schemas are exposed. |
+| `extensions` objects and pgTAP tests | Supabase-managed extension schema/installed extensions; another PostgreSQL installation must provision compatible extensions and roles. |
+| HSE evidence storage bucket and object policies | Supabase Storage (`storage.buckets`, `storage.objects`) integration. A standalone service needs an equivalent private object store and tenant-checked signed access. |
+| RPC calls through `api` schema | Supabase PostgREST behavior and grants. A Laravel adapter can call PostgreSQL functions directly only after reproducing authentication context and least-privilege transaction setup. |
 
-The original implementation was based on `b5a16e42ecabe1b4d7b1c16c46b2442bb3870efd`, commit `ac481d2655dbeb769dc58630e7a127d3aee2dee7`. Docker Desktop and Supabase CLI are available for Phase 2. The exact checked-in migration chain fails before migration 002 because the original `202611190001_sentriq_hse.sql` has a syntax error at the end of `private.can_access_hse()` (SQLSTATE 42601). Phase 2 forbids changing that migration, so the exact chain and CI database job cannot pass under the current constraint. On Phase 2 commit `83cc19beb2f46a0bb062274f34d933db2de5fedf`, Actions [run 44582676187](https://github.com/elmasry-platform/sentriq/actions/runs/44582676187) passed the static job but failed in `supabase start` on that migration; migration reset and pgTAP were skipped. No hosted database was linked or modified.
+This schema is therefore not a drop-in standalone Laravel database package. Porting requires an explicit Auth/JWT context, database-role and API grant design, migration for storage integration, and integration tests for the replacement server.
 
-The pgTAP file contains 119 assertions covering module grant and subscription branches, role scope bindings and intersections, commercial catalog denial, Company Superadmin-specific Copilot grants, invitation expiry/reinvite and trust boundaries, owner/subowner authority, direct tenant RLS operations, and reviewer workflow regression paths. All 119 passed in a disposable diagnostic copy after adding the missing parentheses only to that temporary copy of migration 001. That result validates the later migrations and test behavior in the diagnostic environment; it does **not** establish that the checked-in migration chain applies. A direct local start of the exact branch failed at migration 001 with SQLSTATE 42601 before migrations 002/003 or pgTAP could run.
+## Verification and rollout boundary
 
-## Acceptance checks for database/API rollout
+The checked-in local chain has been reset from empty and all four migrations applied; all 197 pgTAP assertions pass. Local database lint reports no schema errors, and the separate parallel-session harness verifies quota, usage retry, invoice retry, and invitation acceptance races. Final branch acceptance still depends on GitHub Actions passing on the final pushed commit.
 
-- Requests from a company member cannot read or write another company's tenant, site, HSE, or evidence data, even when IDs are guessed or tenant IDs are changed in the request.
-- A company superadmin can configure company members' functions, scope, and assignments; a company admin and employee cannot modify those grants.
-- A company admin cannot gain capabilities that were not explicitly granted by its company superadmin.
-- Owner and subowner can manage all tenants and tenant data; only the owner can create/deactivate subowners. A subowner cannot change this rule through database/API calls.
-- Inspection records retain an immutable form version; review transitions, findings, action updates, and closure decisions preserve actor and time history.
-- Site and task assignment restrictions are applied on every read and write, not only in dashboard filtering.
-
+No hosted Supabase project is linked, no deployment workflow or record was found in this repository, and no hosted/production database was modified. Do not merge or deploy based solely on local checks. Before production use, implement and security-review the trusted application server and UI adapter; configure real domains/storage; rehearse backup/restore and data migration; and review operational pricing, payment, email, monitoring, and incident procedures.

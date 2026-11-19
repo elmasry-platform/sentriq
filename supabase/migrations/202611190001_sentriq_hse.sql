@@ -293,7 +293,7 @@ create or replace function private.can_access_hse(
               select 1 from iam.task_assignments ta where ta.tenant_id=m.tenant_id and ta.membership_id=m.id
                 and ta.task_kind=p_task_kind and ta.task_id=p_task_id and ta.active)))
       ) and exists (select 1 from core.tenant_entitlements e where e.tenant_id=m.tenant_id
-        and e.module_key='hse' and e.status='active' and (e.valid_to is null or e.valid_to>now())))
+        and e.module_key='hse' and e.status='active' and (e.valid_to is null or e.valid_to>now())))))
 $$;
 create or replace function private.current_membership_id(p_tenant_id uuid) returns uuid
 language sql stable security definer set search_path = '' as $$

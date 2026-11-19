@@ -10,6 +10,9 @@ $required = @(
   'core.invoice_items', 'core.payments', 'iam.roles', 'iam.role_permissions',
   'iam.membership_roles', 'iam.org_unit_access', 'iam.invitations',
   'private.has_feature_entitlement', 'private.has_module_entitlement', 'api.record_feature_usage', 'api.invoice_usage_event',
+  'usage_events_idempotency_key_global', 'private.guard_entitlement_grant_lifecycle',
+  'membership_reactivation_access_reset', 'one_live_subscription_per_tenant',
+  'api.set_entitlement_grant_status', 'api.manage_subowner(uuid,boolean)',
   'g.status=''active''', 'iam.membership_role_sites', 'iam.membership_role_org_units',
   'drop policy org_write on core.org_units', 'drop policy membership_write on iam.memberships',
   'drop policy followups_write on hse.follow_ups',
@@ -37,10 +40,14 @@ if (-not $tenantFunction.Success -or $tenantFunction.Groups[1].Value -match '(?i
 if ($sql -notmatch 'grant execute on function api\.record_feature_usage\(uuid,uuid,text,text,numeric,text,jsonb\) to service_role') {
   throw 'The usage recorder is not granted to service_role.'
 }
+$concurrencyHarness = Join-Path $root 'scripts/test_database_concurrency.ps1'
+if (-not (Test-Path -LiteralPath $concurrencyHarness)) { throw 'The separate database concurrency harness is missing.' }
+$workflow = Get-Content -Raw (Join-Path $root '.github/workflows/database.yml')
+if ($workflow -notmatch 'test_database_concurrency\.ps1') { throw 'Database CI does not execute the concurrency harness.' }
 $test = Get-Content -Raw (Join-Path $root 'supabase/tests/database/entitlements_rbac.test.sql')
 $planMatch = [regex]::Match($test, 'extensions\.plan\((\d+)\)')
 $assertionCount = [regex]::Matches($test, 'extensions\.(ok|is|throws_ok|lives_ok|throws_like|cmp_ok|results_eq|set_eq)\(').Count
 if (-not $planMatch.Success -or [int]$planMatch.Groups[1].Value -ne $assertionCount) {
   throw "pgTAP plan/count mismatch: plan=$($planMatch.Groups[1].Value), assertions=$assertionCount"
 }
-Write-Output "PASS: $($required.Count) static contract markers, legacy FOR ALL policies are dropped and not reintroduced, service_role-only usage recording, and $assertionCount synchronized pgTAP assertions."
+Write-Output "PASS: $($required.Count) static contract markers, legacy FOR ALL policies are dropped and not reintroduced, service_role-only usage recording, CI concurrency harness, and $assertionCount synchronized pgTAP assertions."

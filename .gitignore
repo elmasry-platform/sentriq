@@ -1,0 +1,3 @@
+# Supabase CLI local project state (branch pointer and CLI version cache).
+/supabase/.branches/
+/supabase/.temp/

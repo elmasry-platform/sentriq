@@ -1,62 +1,61 @@
-# SENTRIQ Phase 2 implementation report
+# SENTRIQ database stabilization and security implementation
 
-## A. Executive disposition
+## Disposition
 
-**FAIL — REMEDIATION REQUIRED.** The Phase 2 security changes are implemented and all 119 pgTAP assertions passed against a disposable diagnostic copy. The exact checked-in chain still cannot apply from empty because immutable migration `202611190001_sentriq_hse.sql` has a PostgreSQL syntax error in `private.can_access_hse()` (SQLSTATE 42601). The Phase 2 instruction expressly prohibits changing that migration. Therefore the repository migration chain and its database CI job cannot meet the acceptance criteria under the current constraint. Migration 001 remains byte-for-byte unchanged.
+**Local database acceptance: PASS. GitHub Actions acceptance: pending the final branch run.** This work is on `codex/platform-entitlements-rbac`, based on the existing unmerged implementation. It has not been merged into `main` or deployed. The current checkout had no linked Supabase project, and the repository contains no database deployment workflow. No hosted or production database was modified.
 
-## B. Change summary
+## Migration summary
 
-| Finding | Root cause | Correction | Compatibility impact |
-|---|---|---|---|
-| Suspended module grant could remain effective | The earlier grant branch did not consistently require active status. | `202611190003_security_remediation.sql:4–20` requires an active tenant and globally enabled module; grants must be active, unrevoked, started, and unexpired. Subscription access checks active/trialing status and current subscription/item periods. | Suspended, revoked, expired, future, or globally disabled access now denies synchronously. Legacy entitlement rows and their traceable backfill remain intact. |
-| Role Site/Organization Unit scope did not resolve | Role permission rows contain reusable permission definitions, not per-assignment site/unit IDs; the old evaluator compared NULL placeholders to requested scopes. | `202611190003_security_remediation.sql:23–124` adds tenant-safe role-site and role-unit binding tables and evaluates those bindings for each role assignment. Independent member site/unit grants remain required. | Existing role permissions scoped to a site or unit need explicit assignment bindings. No permission rows are cloned; no scope is inferred for existing data. |
-| Tenant and task scopes could be mixed incorrectly | Access must intersect a valid role/direct permission, tenant, site access, org-unit access where applicable, and a validated assigned task. | `202611190003_security_remediation.sql:82–124` evaluates reusable role permissions separately from exact assignment bindings. Task assignment still requires matching task kind/ID/site and applicable org-unit access. | Role union stays separate from management level. Expired/revoked role assignments and scope bindings cease authorizing access. |
-| Commercial prices and financial rows were visible to company principals | Active plan/catalog policies were broader than the documented Owner/Subowner boundary. | `202611190003_security_remediation.sql:126–144,191–217` restricts catalog and financial RLS to platform operators. The Company Superadmin RPC returns only effective module/feature booleans for that caller's tenant. Internal entitlement helper functions are not directly executable by authenticated users. | Company members retain only the information needed to administer their own effective access; platform price and billing detail is hidden. |
-| Expired invitation blocked reinviting the same address | Pending-invitation uniqueness did not safely handle time-dependent expiry. | `202611190003_security_remediation.sql:146–164` closes expired pending invitations transactionally before inserting a reinvitation; no volatile `now()` partial-index predicate is used. Raw tokens remain service-role-only and stored tokens remain hashes. | The trusted Edge Function/Laravel/API server must validate the caller JWT, derive actor identity, and keep service-role credentials server-side. Email delivery remains unimplemented. |
-| Invoice RPC ACL was ordered before the function existed | Migration 002 revoked/granted `api.invoice_usage_event` before defining it, aborting migration execution. | `202611190002_commercial_entitlements_rbac.sql:742–810` places invoice RPC ACL statements after the function definition. | No API behavior changes; this is required for the migration to proceed. |
-| Commercial feature access must be membership-specific | A functional Copilot role alone is not a commercial grant. | `supabase/tests/database/entitlements_rbac.test.sql:133–161` covers a Copilot grant to one Company Superadmin, an employee with the functional permission but no feature grant, expiration, tenant isolation, and usage-rate snapshots. | No Copilot grant is inferred from HSE or from a functional role. |
+| Migration | Work and disposition |
+|---|---|
+| `202611190001_sentriq_hse.sql` | Corrected only the missing closing parentheses at the end of the `private.can_access_hse()` entitlement predicate. This is a syntax-only repair; its predicates and behavior are unchanged. The task's migration review found no evidence of deployment: the feature branch is unmerged, no remote Supabase project is linked, and no deployment workflow/record is present in this repository. The supplied request explicitly authorizes this narrow fix on this branch. |
+| `202611190002_commercial_entitlements_rbac.sql` | Preserved as already implemented on this unmerged branch. It provides normalized commercial plans, subscriptions, grants, usage, invoicing, multi-role RBAC, invitations, and audit. Its ACL ordering correction from the prior implementation remains after the invoice RPC definition. |
+| `202611190003_security_remediation.sql` | Preserved as already implemented on this unmerged branch. It adds effective entitlement checks, assignment-bound site/org scopes, tighter commercial RLS, invitation lifecycle handling, and security/audit corrections. |
+| `202611200001_database_stabilization.sql` | Added forward-only hardening: active plan/tenant/member checks; active/trialing subscription periods; retired-plan denial; global usage idempotency; concurrency-safe quota accounting; exact retry replay and conflict rejection; one-time invoice lines/totals; explicit subscription transitions and replacement behavior; grant status controls and immutable grant terms; scope and membership-reactivation cleanup; serialized invitation creation/acceptance; and Owner-only Subowner lifecycle enforcement. Existing rows and legacy entitlement records are retained. |
 
-Changed implementation files: `supabase/migrations/202611190002_commercial_entitlements_rbac.sql`, new `supabase/migrations/202611190003_security_remediation.sql`, `supabase/tests/database/entitlements_rbac.test.sql`, `scripts/check_database_contract.ps1`, `supabase/README.md`, and `DATABASE_COMPATIBILITY.md`. The UI repository was not modified.
+## Confirmed defect and corrections
 
-## C. Test evidence
+The exact migration chain previously stopped in `private.can_access_hse()` with SQLSTATE `42601` (`syntax error at end of input`). The original line omitted two closing parentheses for the enclosing membership predicate and SQL expression. The checked-in line adds exactly those two parentheses. No table, policy, object name, or authorization rule in migration 001 was redesigned or removed.
 
-The 119 assertions below all passed in a **disposable diagnostic copy** where the missing parentheses were added only to a temporary copy of migration 001. They do not establish that the checked-in migration chain applies. Exact-chain evidence is listed after the table.
+Migration 004 also closes correctness gaps found during the stabilization review: past-due/suspended subscriptions no longer occupy the active/trialing uniqueness slot; retired plans cannot keep access alive; usage retries compare the complete accepted request payload before checking the now-exhausted quota; simultaneous quota requests serialize on a quota key; invoice retries return the original line and increment totals once; and reactivated memberships cannot regain old roles or scopes.
 
-| Test | Expected | Actual | Result | Evidence |
-|---|---|---|---|---|
-| Suspended module grant | Deny | Denied | PASS† | pgTAP 119/119 |
-| Expired Copilot grant | Deny | Denied | PASS† | pgTAP 119/119 |
-| Membership-specific Copilot grant | Exact member only | Superadmin entitled; employee and other tenant denied | PASS† | pgTAP 119/119 |
-| Role multi-assignment | Allow permission union without management escalation | Multiple roles work; membership remains Employee | PASS† | pgTAP 119/119 |
-| Site scope | Exact assigned sites only | Authorized site allowed; other site denied | PASS† | pgTAP 119/119 |
-| Organization Unit scope | Exact unit only | Bound unit allowed; different unit denied | PASS† | pgTAP 119/119 |
-| Task + Site intersection | Both required; only assigned task | Missing site denied; assigned task allowed; other task/site denied | PASS† | pgTAP 119/119 |
-| Commercial confidentiality | Company members denied internal catalog/financial data | Company Admin, Employee, and Superadmin queries return no protected rows; catalog RLS and RPC paths checked | PASS† | pgTAP 119/119 |
-| Invitation expiry/replay | Deny stale/replayed tokens; allow eligible reinvite | Expired/revoked/replayed, wrong-email, unverified-email, forbidden-level, and cross-tenant cases denied; expired-address reinvite allowed | PASS† | pgTAP 119/119 |
-| Reviewer 1 approval/return | Correct stage transitions | Approval advances; return is retained; Reviewer 2 and Final Reviewer transitions pass | PASS† | pgTAP 119/119 |
-| Cross-tenant access | Deny | Role/tenant/invitation access denied across tenant IDs | PASS† | pgTAP 119/119 |
-| Hard delete | Deny and audit | Authenticated DELETE is unavailable; audit ledger rejects deletion; safe audit diffs are present | PASS† | pgTAP 119/119 |
-| Owner/Subowner lifecycle | Owner only | Owner creates/deactivates Subowner; Subowner cannot manage operator roster | PASS† | pgTAP 119/119 |
-| Usage idempotency | One event for a repeated request | One event for repeated key; changed payload and prompt content denied | PASS† | pgTAP 119/119 |
-| Invoice idempotency | One line item | Repeated invoice call leaves one line item at exact rate snapshot | PASS† | pgTAP 119/119 |
-| Checked-in migration chain | Apply from empty database | Fails in migration 001 before 002/003 | FAIL | Local `supabase start`; SQLSTATE 42601 in `private.can_access_hse()` |
-| Exact-chain GitHub Actions | Static and database jobs green | Static job passed; database job failed in `supabase start` at migration 001, before 002/003 or pgTAP. The always-run stop step succeeded. | FAIL | [Actions run 44582676187](https://github.com/elmasry-platform/sentriq/actions/runs/44582676187) |
+## Files changed in this stabilization
 
-† Diagnostic copy only. Local evidence: Supabase CLI 3.2.0 and Docker 29.4.0; disposable `db reset` applied migrations 001–003 in the copied project and `supabase test db --local` reported `All tests successful`, `Files=1, Tests=119`, `Result: PASS`. The exact checked-in project was also attempted locally; its `supabase start` stopped at migration 001 with `syntax error at end of input` before pgTAP could start. GitHub Actions run [44582676187](https://github.com/elmasry-platform/sentriq/actions/runs/44582676187) reproduced that failure on commit `83cc19beb2f46a0bb062274f34d933db2de5fedf`; its static job passed and the database test step was skipped. The diagnostic copy and local stack were stopped afterward. No hosted Supabase project was linked.
+- `.github/workflows/database.yml` — run the independent concurrency harness after the full database test suite; always stop the disposable stack.
+- `.gitignore` — exclude Supabase CLI's generated local `.branches/` and `.temp/` state.
+- `scripts/check_database_contract.ps1` — check security/migration markers, CI harness presence, and exact pgTAP plan count.
+- `scripts/test_database_concurrency.ps1` — use independent local PostgreSQL sessions to test quota, usage idempotency, invoice idempotency, and concurrent invitation acceptance.
+- `supabase/migrations/202611190001_sentriq_hse.sql` — the syntax-only correction described above.
+- `supabase/migrations/202611200001_database_stabilization.sql` — forward-only database corrections.
+- `supabase/tests/database/entitlements_rbac.test.sql` — expanded to 197 synchronized pgTAP assertions.
+- `DATABASE_COMPATIBILITY.md` and `supabase/README.md` — updated migration, Supabase dependency, rollout, and integration contracts.
+- `IMPLEMENTATION_REPORT.md` — this report.
 
-Phase 2 implementation commit: `83cc19beb2f46a0bb062274f34d933db2de5fedf` on `codex/platform-entitlements-rbac`.
+Migrations 002 and 003 were not modified in this stabilization commit. The `sentriq_ui` repository was not modified.
 
-The static contract check passed with 31 markers, guarded policy checks, service-role-only usage recording, and a synchronized 119 assertion plan. `git diff --check` passed; Git emitted only line-ending normalization notices.
+## Verification performed locally
 
-## D. Remaining blockers and unverified work
+All commands below targeted the disposable local Supabase stack only:
 
-- The original migration 001 must receive an authorized syntax correction before the exact branch can apply or the database CI job can pass. It was not modified in this phase because the supplied execution order forbids it.
-- The diagnostic pgTAP pass is not a substitute for a green empty-database run against the exact checked-in chain.
-- Concurrency races for simultaneous invitation acceptance, subscription creation/renewal, quota exhaustion, and invoice calls were not exercised; current idempotency assertions are sequential.
-- Subscription replacement/renewal, duplicate live subscriptions, complete Owner/Subowner access across every tenant table, and full Company Admin/Superadmin capability matrices need further acceptance testing.
-- No live UI/Supabase adapter, trusted Copilot server, invitation email delivery, payment gateway/collection, production pricing, or tax rules are implemented.
-- Current HSE database/UI scope covers forms, versions, inspections, reviews, findings, corrective actions, follow-ups, and evidence metadata. Other HSE areas and future Operations/ERP modules remain outside this implementation.
+| Check | Result |
+|---|---|
+| Static database contract | PASS — 37 contract markers; broad-policy regression guards; service-role-only usage recording; 197 planned and detected assertions. |
+| `supabase db reset --local` | PASS — recreated the local database and applied migrations 001, 002, 003, and 004 in order from empty. |
+| `supabase test db --local` | PASS — `Files=1, Tests=197, Result: PASS`. |
+| Parallel database harness | PASS — 12 simultaneous quota requests produced exactly 3 successes at quota 3; exact retry and payload conflict behavior passed; 8 simultaneous invoice retries produced one line and one total increment; simultaneous invite acceptance produced one winner. |
+| `supabase db lint --local --fail-on error` | PASS — no schema errors found. |
+| `git diff --check` | PASS — no whitespace errors. |
 
-## E. Deployment status
+GitHub Actions must still be checked on the final pushed commit before recording branch acceptance. The required workflow has separate static and Supabase database jobs; the database job starts an isolated stack, resets from empty, runs pgTAP plus the concurrency harness, and stops the stack with `if: always()`.
 
-**NOT DEPLOYED — NO HOSTED OR PRODUCTION DATABASE WAS MODIFIED.** No merge or deployment was performed.
+## Remaining limits and security concerns
+
+- The database does not provide a trusted application server. Invitation RPCs and usage/billing RPCs are service-role-only; a future server must validate bearer tokens with Supabase Auth, derive identity server-side, and never expose the service-role key to a browser.
+- The UI still uses mock/local data and has no live Supabase adapter. No Laravel/API pages or frontend integration were added.
+- Invitation email delivery, Copilot model execution, payment collection, tax handling, and production price configuration are not implemented. No production price or legacy billing value was invented.
+- HSE coverage remains forms, published form versions, inspections, reviews, findings, corrective actions, follow-ups, and evidence metadata. Incidents, near misses, permits, compliance audits, and risk assessments remain future scope unless separately implemented.
+- Local migration/test success is not a production-readiness claim. Hosted credentials, data migration rehearsal, operational backup/recovery, trusted-server integration, and deployment review remain outside this change.
+
+## Merge readiness
+
+**PARTIAL until GitHub Actions passes on the final feature-branch commit.** If both workflow jobs pass and the database job's reset, pgTAP, and concurrency steps execute, this database-only branch is ready for review for merge. No merge, deployment, or hosted database change is authorized by this task.
