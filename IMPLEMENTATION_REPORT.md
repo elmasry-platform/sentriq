@@ -2,7 +2,7 @@
 
 ## Disposition
 
-**Local database acceptance: PASS. GitHub Actions acceptance: pending the final branch run.** This work is on `codex/platform-entitlements-rbac`, based on the existing unmerged implementation. It has not been merged into `main` or deployed. The current checkout had no linked Supabase project, and the repository contains no database deployment workflow. No hosted or production database was modified.
+**Local database acceptance: PASS. GitHub Actions acceptance: pending the rerun with the corrected concurrency harness.** This work is on `codex/platform-entitlements-rbac`, based on the existing unmerged implementation. It has not been merged into `main` or deployed. The current checkout had no linked Supabase project, and the repository contains no database deployment workflow. No hosted or production database was modified.
 
 ## Migration summary
 
@@ -46,7 +46,7 @@ All commands below targeted the disposable local Supabase stack only:
 | `supabase db lint --local --fail-on error` | PASS — no schema errors found. |
 | `git diff --check` | PASS — no whitespace errors. |
 
-GitHub Actions must still be checked on the final pushed commit before recording branch acceptance. The required workflow has separate static and Supabase database jobs; the database job starts an isolated stack, resets from empty, runs pgTAP plus the concurrency harness, and stops the stack with `if: always()`.
+GitHub Actions run [44635637902](https://github.com/elmasry-platform/sentriq/actions/runs/44635637902) checked commit `69761d2266fe832ae4376c799c118dd229300c4a`. Its static job passed; the database job started successfully, applied all four migrations from empty, and passed all 197 pgTAP assertions. The concurrency step exposed a harness bug: it sometimes selected a generated idempotency key whose request had been denied by quota. The worker now returns its key with its result, and retry/conflict checks use a confirmed successful request. That fix passes the full local reset/test/concurrency/lint sequence; GitHub Actions must rerun on the fix before branch acceptance. The workflow has separate static and Supabase database jobs; the database job starts an isolated stack and stops it with `if: always()`.
 
 ## Remaining limits and security concerns
 
@@ -58,4 +58,4 @@ GitHub Actions must still be checked on the final pushed commit before recording
 
 ## Merge readiness
 
-**PARTIAL until GitHub Actions passes on the final feature-branch commit.** If both workflow jobs pass and the database job's reset, pgTAP, and concurrency steps execute, this database-only branch is ready for review for merge. No merge, deployment, or hosted database change is authorized by this task.
+**PARTIAL until GitHub Actions passes on the corrected feature-branch commit.** If both workflow jobs pass and the database job's reset, pgTAP, and concurrency steps execute, this database-only branch is ready for review for merge. No merge, deployment, or hosted database change is authorized by this task.

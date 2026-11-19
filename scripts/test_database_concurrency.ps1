@@ -51,10 +51,10 @@ select set_config('request.jwt.claim.role','service_role',false);
 select pg_sleep(0.2);
 select api.record_feature_usage('$tenantId','$membershipId','hse.copilot','$key',1,'request','{}'::jsonb);
 "@
-  $jobs += Start-Job -ArgumentList $sql,$container -ScriptBlock {
-    param($Query,$DatabaseContainer)
+  $jobs += Start-Job -ArgumentList $sql,$container,$key -ScriptBlock {
+    param($Query,$DatabaseContainer,$RequestKey)
     $captured = $Query | & docker exec -i $DatabaseContainer psql -X -qAt -v ON_ERROR_STOP=1 -U postgres -d postgres 2>&1
-    [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($captured -join "`n") }
+    [pscustomobject]@{ RequestKey = $RequestKey; ExitCode = $LASTEXITCODE; Output = ($captured -join "`n") }
   }
 }
 $null = Wait-Job -Job $jobs
@@ -77,19 +77,12 @@ $firstSuccess = $usageSuccess[0]
 $eventIds = [regex]::Matches($firstSuccess.Output,'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',[System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 if ($eventIds.Count -eq 0) { throw "Successful usage request did not return an event ID: $($firstSuccess.Output)" }
 $originalEventId = $eventIds[$eventIds.Count - 1].Value
-$retry = Invoke-LocalDatabaseSql "select set_config('request.jwt.claim.role','service_role',false); select api.record_feature_usage('$tenantId','$membershipId','hse.copilot','$($requestKeys[0])',1,'request','{}'::jsonb);"
+$successfulKey = $firstSuccess.RequestKey
+$retry = Invoke-LocalDatabaseSql "select set_config('request.jwt.claim.role','service_role',false); select api.record_feature_usage('$tenantId','$membershipId','hse.copilot','$successfulKey',1,'request','{}'::jsonb);"
 if ($retry.ExitCode -ne 0 -or $retry.Output -notmatch [regex]::Escape($originalEventId)) {
-  # The first completed worker is not necessarily the request whose key is at index 0.
-  $firstSucceededKey = $null
-  foreach ($candidate in $requestKeys) {
-    $found = Invoke-LocalDatabaseSql "select id from core.usage_events where tenant_id='$tenantId' and idempotency_key='$candidate';"
-    if ($found.ExitCode -eq 0 -and $found.Output -match '^[0-9a-f-]{36}$') { $firstSucceededKey = $candidate; $originalEventId = $found.Output.Trim(); break }
-  }
-  if (-not $firstSucceededKey) { throw 'Could not select a successful request key for the retry check.' }
-  $retry = Invoke-LocalDatabaseSql "select set_config('request.jwt.claim.role','service_role',false); select api.record_feature_usage('$tenantId','$membershipId','hse.copilot','$firstSucceededKey',1,'request','{}'::jsonb);"
-  if ($retry.ExitCode -ne 0 -or $retry.Output -notmatch [regex]::Escape($originalEventId)) { throw "Exact retry after quota exhaustion did not return the original event: $($retry.Output)" }
+  throw "Exact retry after quota exhaustion did not return the original event: $($retry.Output)"
 }
-$conflict = Invoke-LocalDatabaseSql "select set_config('request.jwt.claim.role','service_role',false); select api.record_feature_usage('$tenantId','$membershipId','hse.copilot','$($requestKeys[0])',2,'request','{}'::jsonb);"
+$conflict = Invoke-LocalDatabaseSql "select set_config('request.jwt.claim.role','service_role',false); select api.record_feature_usage('$tenantId','$membershipId','hse.copilot','$successfulKey',2,'request','{}'::jsonb);"
 if ($conflict.ExitCode -eq 0 -or $conflict.Output -notmatch 'idempotency_key_payload_conflict') {
   throw "Conflicting idempotency payload was not deterministically rejected: $($conflict.Output)"
 }
