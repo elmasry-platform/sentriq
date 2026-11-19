@@ -742,8 +742,8 @@ revoke all on function api.issue_entitlement_grant(uuid,text,text,uuid,timestamp
 revoke all on function api.manage_subowner(uuid,boolean),api.publish_plan(text,integer,text,char,bigint,jsonb),api.create_subscription(uuid,uuid,timestamptz,timestamptz,char,jsonb),api.set_feature_enabled(text,boolean),api.set_module_enabled(text,boolean),api.update_subscription_status(uuid,text) from public,anon;
 grant execute on function api.manage_subowner(uuid,boolean),api.publish_plan(text,integer,text,char,bigint,jsonb),api.create_subscription(uuid,uuid,timestamptz,timestamptz,char,jsonb),api.set_feature_enabled(text,boolean),api.set_module_enabled(text,boolean),api.update_subscription_status(uuid,text) to authenticated;
 revoke all on function api.revoke_invitation(uuid,text) from public,anon;
-revoke all on function api.create_invoice_draft(uuid,text,char,timestamptz,timestamptz),api.invoice_usage_event(uuid,uuid,text) from public,anon,authenticated;
-grant execute on function api.create_invoice_draft(uuid,text,char,timestamptz,timestamptz),api.invoice_usage_event(uuid,uuid,text) to service_role;
+revoke all on function api.create_invoice_draft(uuid,text,char,timestamptz,timestamptz) from public,anon,authenticated;
+grant execute on function api.create_invoice_draft(uuid,text,char,timestamptz,timestamptz) to service_role;
 create or replace function api.record_feature_usage(p_tenant_id uuid,p_membership_id uuid,p_feature_key text,p_idempotency_key text,
  p_quantity numeric,p_usage_unit text,p_metadata jsonb default '{}'::jsonb)
 returns uuid language plpgsql security definer set search_path='' as $$
