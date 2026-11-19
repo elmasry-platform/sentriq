@@ -1,0 +1,32 @@
+name: Database migrations and tests
+
+on:
+  pull_request:
+  push:
+    branches: [main, "codex/**"]
+
+jobs:
+  static-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check migration contract and privileged usage boundary
+        shell: pwsh
+        run: ./scripts/check_database_contract.ps1
+
+  supabase-database:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - name: Start disposable local Supabase
+        run: supabase start --exclude studio,imgproxy,edge-runtime,logflare,vector
+      - name: Apply all migrations from an empty local database
+        run: supabase db reset --local
+      - name: Run database authorization and workflow tests
+        run: supabase test db --local
+      - name: Stop local Supabase
+        if: always()
+        run: supabase stop --no-backup

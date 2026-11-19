@@ -1,6 +1,6 @@
 # SENTRIQ database compatibility contract
 
-This document records the requested database behavior and the data contract exposed by the current UI. An initial Supabase PostgreSQL migration is in `supabase/migrations/202611190001_sentriq_hse.sql`; it has not been deployed or verified against a hosted project.
+This document records the required database behavior and the data contract exposed by the current UI. The original schema is in `supabase/migrations/202611190001_sentriq_hse.sql`; follow-on commercial/RBAC hardening is in `supabase/migrations/202611190002_commercial_entitlements_rbac.sql`. Neither migration has been applied to a hosted project.
 
 ## Scope and inspected sources
 
@@ -53,19 +53,27 @@ Build the shared identity, tenant, site, authorization, audit, and module-entitl
 
 `core.modules`/tenant entitlements (or equivalent) should allow the platform owner to enable modules per company. Within HSE, company superadmins should assign granular capabilities such as form design, inspection execution, review stages, corrective-action ownership, closure review, and read-only audit access. The demo's ten roles are useful UI presets, but must not be the only authorization mechanism because the requirement is to configure function access per employee.
 
-The initial migration creates shared `core`, `iam`, `audit`, `api`, and `private` schemas and HSE tables for forms and published snapshots, inspections and review history, findings, corrective actions and updates, follow-ups, and evidence metadata. `api.v_*` views expose workspace aliases and camel-case fields for a UI adapter. The UI still needs a live Supabase client adapter; today it uses static/local demo data.
+The migrations create shared `core`, `iam`, `audit`, `api`, and `private` schemas; HSE forms and published snapshots, inspections and review history, findings, corrective actions and updates, follow-ups, and evidence metadata; and normalized commercial entitlements, functional RBAC, invitations, scopes, and audit. `api.v_*` views expose workspace aliases and camel-case fields for a UI adapter. The UI still needs a live Supabase client adapter; today it uses static/local demo data.
 
 ## Compatibility gaps to close before a production migration
 
 1. The migration has not been applied to a Supabase project. It needs migration execution and security review before production use.
 2. The current dashboard's `getDashboard(workspaceId)` accepts an arbitrary workspace ID and filters mock data in application code. Replace it with authenticated API reads whose tenant scope is derived from the verified principal; never trust a browser-supplied tenant ID as authorization.
-3. The UI currently models one role per user plus `siteIds`; the requested admin-configurable access needs multiple permission/scope assignments and task assignments. Keep a compatibility adapter while the UI evolves.
+3. The UI currently models one demo role per user plus `siteIds`; the API keeps `role` as the membership management level and adds `membershipLevel` and `functionalRoles`. The UI needs to adopt the normalized role collection.
 4. The demo has no explicit form version object in the dashboard `Inspection` type beyond `templateVersion`, while the form domain has published snapshots. The API must guarantee inspections retain the exact published snapshot they used.
 5. The demo includes tenant-less audit entries and evidence linked by a polymorphic record type/ID. Production data must always have an explicit tenant or platform scope and must validate polymorphic references before accepting writes.
 6. Owner/subowner lifecycle control is not represented in the demo role model and differs from the supplied archive's platform-admin data-access restriction.
-7. Provision the first owner after creating their Auth account by running the operator-only `private.bootstrap_platform_owner(auth_user_uuid)` function. Then call `api.create_tenant(name, industry_label, first_company_superadmin_auth_user_uuid)` as a platform operator.
+7. Provision the first owner after creating their Auth account by running the operator-only `private.bootstrap_platform_owner(auth_user_uuid)` function. Then call `api.create_tenant(name, industry_label, first_company_superadmin_auth_user_uuid)` as a platform operator. New tenants receive no paid module until an explicit subscription or grant is issued.
 8. Verify tenant domain ownership outside the database before setting a domain row to `verified`. Keep the `sentriq-hse-evidence` Storage bucket private and use object paths `tenant_uuid/site_uuid/file_name`.
-9. Employee invitation email delivery is not included yet. A user must first have a Supabase Auth account; the company superadmin can then add that Auth user as a company membership.
+9. Invitations now have a hash-only, verified-email, expiring, revocable, single-use database lifecycle for Company Admin/Employee roles. Email delivery and invitations that create Company Superadmins remain outside scope.
+
+## Implementation note: branch `codex/platform-entitlements-rbac`
+
+The live repository matched the earlier inventory: one initial migration; a single membership management role; direct permission grants without roles/org-unit scope; tenant-level module switches; generic INSERT/UPDATE audit only; no invitation lifecycle; and the documented initial-review transition mismatch. The relevant UI files were read from `elmasry-platform/sentriq_ui` on `main`: its dashboard consumes mock JSON, its form repository is browser-local storage, and form snapshots preserve bilingual JSON, conditions, scoring, repeat groups, and the 23 declared field types.
+
+The follow-on migration preserves the initial migration and existing `core.tenant_entitlements` rows, adds plan/feature/subscription/grant/usage/invoice/payment tables and normalized multi-role RBAC, and tightens scope intersections, invitations, review transitions, audit, and hard-delete access. Tenant `role` remains the management level for compatibility. HSE domain areas absent from current database/UI workflows remain planned rather than invented. The UI is not a live Supabase client, and no Copilot trusted server or payment/email provider exists; the API contract and trusted-server boundary are documented in `supabase/README.md`.
+
+The initial branch status was clean at `b5a16e42ecabe1b4d7b1c16c46b2442bb3870efd`. Local PostgreSQL execution still needs to be completed in an environment with the Supabase CLI and a running Docker engine; no hosted database was used.
 
 ## Acceptance checks for database/API rollout
 
