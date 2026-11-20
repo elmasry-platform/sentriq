@@ -1,3 +1,3 @@
 # SENTRIQ
 
-Database foundation for SENTRIQ lives in [`supabase/`](supabase/README.md). The first migration adds company tenancy, configurable tenant permissions, platform owner/subowner controls, and the HSE data model. See [`DATABASE_COMPATIBILITY.md`](DATABASE_COMPATIBILITY.md) for the UI field mapping and rollout gaps.
+SENTRIQ is a modular enterprise platform with HSE as its first business module. Its Supabase/PostgreSQL foundation is in [`supabase/`](supabase/README.md): tenant isolation, platform authority, normalized functional RBAC, commercial module/feature entitlements, audit, and HSE workflows. See [`DATABASE_COMPATIBILITY.md`](DATABASE_COMPATIBILITY.md) for the current UI mapping, trusted-backend contract, and remaining integration gaps.

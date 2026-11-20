@@ -1,0 +1,54 @@
+name: Database migrations and tests
+
+on:
+  pull_request:
+  push:
+    branches: [main, "codex/**"]
+
+jobs:
+  static-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check migration contract and privileged usage boundary
+        shell: pwsh
+        run: ./scripts/check_database_contract.ps1
+
+  supabase-database:
+    runs-on: ubuntu-latest
+    needs: static-contract
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - name: Start disposable local Supabase
+        run: supabase start --exclude studio,imgproxy,edge-runtime,logflare,vector
+      - name: Apply all migrations from an empty local database
+        run: supabase db reset --local
+      - name: Run pgTAP on the fresh database
+        run: supabase test db --local
+      - name: Run F-01 and F-02 security regression probes
+        shell: pwsh
+        run: ./scripts/security_review_probes.ps1
+      - name: Verify SECURITY DEFINER catalog and role ACLs
+        shell: pwsh
+        run: ./scripts/security_catalog_checks.ps1
+      - name: Run F-03 concurrency tests and verify exact cleanup
+        shell: pwsh
+        run: ./scripts/test_database_concurrency.ps1
+      - name: Verify F-03 cleanup after an injected failure
+        shell: pwsh
+        run: ./scripts/verify_database_concurrency_failure_cleanup.ps1
+      - name: Repeat pgTAP without resetting the database
+        run: supabase test db --local
+      - name: Repeat concurrency tests and verify exact cleanup
+        shell: pwsh
+        run: ./scripts/test_database_concurrency.ps1
+      - name: Run pgTAP a third time without resetting the database
+        run: supabase test db --local
+      - name: Lint the migrated local database
+        run: supabase db lint --local --fail-on error
+      - name: Stop local Supabase
+        if: always()
+        run: supabase stop --no-backup

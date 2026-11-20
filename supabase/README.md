@@ -1,27 +1,59 @@
 # SENTRIQ database
 
-This directory contains the initial Supabase PostgreSQL schema for company tenancy, permissions, and the HSE module.
+This repository contains the Supabase/PostgreSQL implementation. Migrations are forward-only except for the narrowly authorized syntax-only correction to migration 001 on this still-unmerged branch. Migration 001 establishes tenancy and HSE; `202611190002_commercial_entitlements_rbac.sql` adds normalized commercial entitlements and RBAC; `202611190003_security_remediation.sql` tightens scope and commercial security; `202611200001_database_stabilization.sql` adds subscription, grant, invitation, membership-reactivation, usage, and invoice lifecycle/concurrency corrections; `202611200002_foundation_security_remediation.sql` closes direct membership writes, enforces tenant-level modules, and hardens future function ACL defaults.
 
-## First local or hosted setup
+## Local development
 
-1. Create/link the Supabase project and apply `migrations/202611190001_sentriq_hse.sql` with the Supabase CLI.
-2. Create the platform owner's Auth account. As the database operator (`postgres`), run:
+Use a disposable local Supabase stack only:
 
-   ```sql
-   select private.bootstrap_platform_owner('<owner-auth-user-uuid>'::uuid);
-   ```
+```powershell
+supabase start
+supabase db reset --local
+supabase test db --local
+./scripts/test_database_concurrency.ps1
+./scripts/verify_database_concurrency_failure_cleanup.ps1
+./scripts/security_review_probes.ps1
+./scripts/security_catalog_checks.ps1
+supabase db lint --local --fail-on error
+```
 
-   This is a one-time operation. Do not expose this function through the browser API.
-3. The owner or a subowner creates a company with `api.create_tenant(name, industry_label, first_company_superadmin_auth_user_uuid)`. The tenant starts with HSE enabled.
-4. Add `api`, `core`, `iam`, `hse`, and `audit` to the Supabase Data API exposed schemas as configured in `config.toml`. Keep `private` unexposed.
-5. Keep the `sentriq-hse-evidence` bucket private. Insert pending evidence metadata first, then upload to `tenant_uuid/site_uuid/file_name`, then update that uploader's metadata status to `confirmed`. Storage policies require the metadata row and apply its tenant/site/task permissions.
+GitHub Actions performs static contract checks, an empty-database reset, pgTAP, security probes, catalog ACL verification, normal and injected-failure concurrency checks with cleanup, two more pgTAP runs without reset, lint, and stops the stack even if an earlier step fails. Never use `supabase db push` or link a hosted project for this task.
 
-## Current boundary
+## Authority and authorization
 
-- Platform operators are separate from company memberships. Owner and subowner have cross-tenant access. Only the owner can manage subowners.
-- Company superadmins can manage memberships, site access, task assignments, and member permission grants inside their company. Admins and employees receive only explicit permissions and scopes.
-- A user account in Supabase Auth does not grant company access by itself. The company superadmin must add that existing Auth user to `iam.memberships` before the user can access tenant data. Invitation email delivery is not part of this first migration.
-- Published forms and review/action histories are append-only. Inspection answers and mutable work records are JSONB/typed columns matching the UI contract.
-- Review decisions are inserted into `hse.inspection_reviews`; a database trigger applies the matching workflow transition in the same transaction. Corrective-action status changes create `hse.action_updates` history rows automatically.
-- The UI repository still uses mock JSON and local form storage. Wire its repository/service layer to the API views and table writes before expecting live data.
-- This migration has not been deployed to a hosted project. Apply it in development and review authorization behavior before production data is stored.
+- Platform Owner and Subowner are separate from company memberships. Both have cross-company operational access; only Owner can create, reactivate, deactivate, or manage Subowners. A Subowner cannot deactivate itself.
+- `iam.memberships.member_role` is the management level (`company_superadmin`, `company_admin`, or `employee`). Functional roles live in `iam.roles`, `iam.role_permissions`, and `iam.membership_roles`; a membership may have multiple functional roles. Functional roles cannot confer management or platform authority.
+- Role permissions are reusable definitions. Site and organization-unit bindings belong to the membership-role assignment in `iam.membership_role_sites` and `iam.membership_role_org_units`. These bindings do not replace independent member `iam.site_access` and `iam.org_unit_access` grants. A task assignment cannot bypass site or organization-unit restrictions.
+- Company Superadmin manages invitations and business role/scope assignments only within its active tenant. Direct membership table writes are revoked for `anon`, `authenticated`, and `service_role`; verified invitation acceptance is the ordinary activation path. A narrow `service_role` RPC can suspend or end an existing membership but cannot activate it or change identity, tenant, email, or management level. Company Admin and Employee cannot expand membership, permission, role, or scope access.
+- HSE access requires an active tenant and membership, effective HSE entitlement, a business permission, and applicable site/org-unit/task scopes. Scope expiry/revocation and membership reactivation cleanup take effect synchronously.
+- HSE and Copilot are separate commercial entitlements. `api.can_use_feature(...)` requires active HSE and feature entitlement, applicable membership, required permission, and scope. Platform operator access does not bypass feature licensing. `api.list_my_entitlements(tenant_id)` returns only the Company Superadmin's effective module/feature status for its tenant, without prices.
+
+## Commercial operations
+
+The seed contains an unpriced draft `hse_base` plan template for HSE without Copilot. It grants no access until explicitly priced and published. `api.create_subscription(...)` snapshots the approved price and currency. Only active/trialing subscriptions with active plans and current subscription/item periods authorize use; no past-due grace period is assumed. Past-due/suspended records do not occupy the single live-subscription slot. Canceled/expired statuses are terminal.
+
+Platform operators issue and transition grants with `api.issue_entitlement_grant(...)`, `api.set_entitlement_grant_status(...)`, and `api.revoke_entitlement_grant(...)`. Grants use half-open time windows and can target a tenant or one exact membership. Grant commercial terms cannot be changed after issue. Billable grants require an applicable payer, currency, and explicit minor-unit rate; no production prices are seeded.
+
+Module grants are tenant-scoped. Membership-specific exceptions apply only to feature grants and require the parent company module. The migration aborts with IDs if it finds historical membership-scoped module grants; review those records explicitly before applying the migration.
+
+A trusted server must check feature entitlement before model execution, then call service-role-only `api.record_feature_usage(...)` with measured quantity and an idempotency key. The RPC rejects prompt/response content, globally deduplicates keys, rejects a different payload on reuse, returns the original event for an exact retry even after quota exhaustion, and serializes quota consumption. Billing rates and quota are snapshotted from the grant/subscription. `api.create_invoice_draft(...)` and `api.invoice_usage_event(...)` are trusted service-role functions; concurrent retries return one invoice line and increment totals once. `core.payments` is provider-neutral. No gateway, tax, collection, card data, or pricing policy is implemented.
+
+## Invitations and audit
+
+Invitation creation/acceptance RPCs are executable only by `service_role`. A future Edge Function or Laravel/API server must validate the caller bearer token with Supabase Auth, derive identity and verified email from that trusted response, then invoke the RPC with server-only credentials. Never accept an actor UUID from browser JSON or expose the service-role key to a browser. The database stores a token hash, checks expiry/email/tenant/level, prevents replay, and serializes acceptance and reinvitation. Invitations may create Company Admins or Employees only. Email delivery is not integrated.
+
+Audit diffs contain allowlisted operational fields; emails, tokens, passwords, prompts/responses, evidence bytes, and unnecessary personal data are excluded. Audit events and business history are append-only. Ordinary authenticated hard deletes are revoked where history must be retained; use status, revocation, or archival transitions.
+
+## Provisioning and UI compatibility
+
+Bootstrap the first platform Owner after its Auth account exists by calling `private.bootstrap_platform_owner(auth_user_uuid)` as local database operator (`postgres`). `api.create_tenant(...)` creates a company and initial Superadmin but does not turn on a paid module. Enable access only through an explicit plan/subscription or platform grant.
+
+Legacy `core.tenant_entitlements` rows are retained and backfilled to module grants with their tenant, module, effective status, validity, actor, and creation time. The old records have no verified historical billing information; migration metadata preserves traceability without inventing monetary values. No Copilot grant is backfilled. The membership view preserves the existing UI `role` field as management level and adds `membershipLevel` and `functionalRoles`.
+
+The UI still reads mock/local data (`data/mock-data.json` and browser `localStorage`); there is no live Supabase adapter or trusted Copilot server. IDs and tenant claims from the browser are untrusted. Keep schema `private` unexposed, and keep service-role credentials on a trusted server.
+
+## Supabase dependency and verification boundary
+
+Core relational behavior (constraints, RLS, indexes, triggers, transaction locks, JSONB, and functions) uses PostgreSQL capabilities targeting PostgreSQL 15. Identity and JWT context (`auth.users`, `auth.uid()`, `auth.role()`), Supabase database roles (`anon`, `authenticated`, `service_role`), PostgREST schema exposure, managed extensions, and `storage.buckets`/`storage.objects` are Supabase-specific. A standalone Laravel/PostgreSQL deployment needs an explicit Auth/JWT adapter, equivalent database roles/grants and request context, compatible extensions, and a private object-storage integration; this schema is not a drop-in standalone Laravel package.
+
+Migration 001's existing `private.can_access_hse()` entitlement predicate was missing two closing parentheses, causing SQLSTATE `42601`. The authorized syntax-only repair is retained in the historical migration. Follow-up branch `codex/foundation-security-remediation` adds the forward-only migration `202611200002_foundation_security_remediation.sql`; its test sequence and CI run are recorded in repository-root `REMEDIATION_RESULTS.md`. No hosted/production database was accessed or modified.
