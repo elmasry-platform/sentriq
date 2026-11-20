@@ -7,8 +7,8 @@
 | Repository | `elmasry-platform/sentriq` |
 | Source audit branch and commit | `codex/schema-coverage-audit` — `31368375fa4c4fcafd9f5a6d2078b2dc79ced854` |
 | Remediation branch | `codex/foundation-security-remediation` |
-| Final remediation implementation commit | Recorded in this report after the implementation commit is created; this is the tested code changeset used for CI. |
-| Pull request | To `main`; link recorded after creation. No merge was performed. |
+| Final remediation implementation commit | `6c4ea47422f0bd7f213b0414a7073a8e3fb5b272` |
+| Pull request | To `main`; link will be added after creation. No merge was performed. |
 
 The eight existing implementation, stabilization, security-review, and schema-audit commits remain in this branch's ancestry. The source branch histories were not rewritten. `main` was not changed.
 
@@ -39,7 +39,7 @@ The pgTAP transaction temporarily grants service-role `SELECT` on `core`, `iam`,
 
 ## Local repeatability results
 
-On the final implementation changeset, the required sequence was run from `npx supabase db reset --local`:
+The full local sequence was run from `npx supabase db reset --local` on implementation commit `0df7a6caef3755c0d5c9c02b07de57887dd82545`. After the PowerShell wrapper's final exit-code normalization was added in `6c4ea47422f0bd7f213b0414a7073a8e3fb5b272`, the injected-failure wrapper was rerun locally and the full CI sequence passed on that commit:
 
 1. Migration application from empty — PASS, all five migrations.
 2. Static contract checks — PASS.
@@ -54,7 +54,7 @@ On the final implementation changeset, the required sequence was run from `npx s
 11. `npx supabase db lint --local --fail-on error` — PASS, no schema errors.
 12. `scripts/check_database_contract.ps1` and `git diff --check` — PASS.
 
-Concurrency run markers from the accepted sequence: `sentriq-f03-c5e5b4aff4a249b6bb74abe82120fd51` and `sentriq-f03-a60d32366de64b23be91010d746232cf`. No concurrency fixture survived either run. The failure-injection path also verifies cleanup after partial execution.
+Local concurrency run markers from the accepted sequence: `sentriq-f03-c5e5b4aff4a249b6bb74abe82120fd51` and `sentriq-f03-a60d32366de64b23be91010d746232cf`. CI concurrency run markers on the final implementation commit: `sentriq-f03-e6180e6e99fe42c1a77fd901aade9311` and `sentriq-f03-493e14c61ee048b4ac64475a56f90152`. No concurrency fixture survived any run. The failure-injection path also verifies cleanup after partial execution.
 
 ## Changed files
 
@@ -67,6 +67,7 @@ Concurrency run markers from the accepted sequence: `sentriq-f03-c5e5b4aff4a249b
 - `DOMAIN_CATALOG.md`
 - `IMPLEMENTATION_REPORT.md`
 - `REMEDIATION_ROADMAP.md`
+- `REMEDIATION_RESULTS.md`
 - `SCHEMA_COVERAGE_AUDIT.md`
 - `SECURITY_REVIEW.md`
 - `TARGET_DATA_MODEL.md`
@@ -84,10 +85,10 @@ Concurrency run markers from the accepted sequence: `sentriq-f03-c5e5b4aff4a249b
 
 GitHub Actions workflow: `.github/workflows/database.yml`.
 
-- Workflow run for the final implementation commit: recorded after push.
-- Required jobs: `static-contract` and `supabase-database`.
+- [Workflow run 44815836147](https://github.com/elmasry-platform/sentriq/actions/runs/44815836147) passed on `6c4ea47422f0bd7f213b0414a7073a8e3fb5b272`.
+- Required jobs `static-contract` and `supabase-database` both passed. The database job completed the fresh reset, pgTAP, security probes, catalog ACL checks, successful and injected-failure concurrency cleanup, repeat pgTAP runs, and lint with no schema errors.
 - Expected database job sequence: local stack start, empty reset, pgTAP, security probes, catalog ACL checks, successful and injected-failure concurrency cleanup, two further pgTAP runs, lint, and guaranteed local stack shutdown.
-- Pull request to `main`: recorded after creation. The PR remains open for review and is not merged.
+- Pull request to `main`: link will be added after creation. The PR will remain open for review and will not be merged.
 
 ## Remaining findings and integration gates
 
