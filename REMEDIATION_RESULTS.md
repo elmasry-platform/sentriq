@@ -8,7 +8,7 @@
 | Source audit branch and commit | `codex/schema-coverage-audit` — `31368375fa4c4fcafd9f5a6d2078b2dc79ced854` |
 | Remediation branch | `codex/foundation-security-remediation` |
 | Final remediation implementation commit | `6c4ea47422f0bd7f213b0414a7073a8e3fb5b272` |
-| Pull request | To `main`; link will be added after creation. No merge was performed. |
+| Pull request | [#1 — Harden foundation membership and entitlement security](https://github.com/elmasry-platform/sentriq/pull/1), targeting `main`. No merge was performed. |
 
 The eight existing implementation, stabilization, security-review, and schema-audit commits remain in this branch's ancestry. The source branch histories were not rewritten. `main` was not changed.
 
@@ -88,7 +88,7 @@ GitHub Actions workflow: `.github/workflows/database.yml`.
 - [Workflow run 44815836147](https://github.com/elmasry-platform/sentriq/actions/runs/44815836147) passed on `6c4ea47422f0bd7f213b0414a7073a8e3fb5b272`.
 - Required jobs `static-contract` and `supabase-database` both passed. The database job completed the fresh reset, pgTAP, security probes, catalog ACL checks, successful and injected-failure concurrency cleanup, repeat pgTAP runs, and lint with no schema errors.
 - Expected database job sequence: local stack start, empty reset, pgTAP, security probes, catalog ACL checks, successful and injected-failure concurrency cleanup, two further pgTAP runs, lint, and guaranteed local stack shutdown.
-- Pull request to `main`: link will be added after creation. The PR will remain open for review and will not be merged.
+- [Pull request #1](https://github.com/elmasry-platform/sentriq/pull/1) targets `main` and remains open for review; it was not merged.
 
 ## Remaining findings and integration gates
 
