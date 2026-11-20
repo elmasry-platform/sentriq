@@ -84,7 +84,7 @@ Recommended phase labels are relative sequence only, not delivery dates:
 - **Relationships:** Auth identity may join multiple tenant memberships; membership has management level, lifecycle and limited display contact fields. Invitation targets tenant/email and is accepted by a verified matching identity.
 - **Boundary:** Auth proves identity, membership proves company association. Neither a browser-supplied tenant ID nor UI role selection is authority.
 - **Dependencies:** Auth JWT verification, invitation email delivery, membership lifecycle RPC, security audit.
-- **Current status:** DB supports multiple tenant memberships and verified-token acceptance RPC. F-01 confirms direct authenticated table policies still allow active member creation/activation around that acceptance path.
+- **Current status:** DB supports multiple tenant memberships and verified-token acceptance RPC. The baseline F-01 direct-write bypass is fixed in forward migration `202611200002_foundation_security_remediation.sql`: API roles cannot directly insert/update/delete membership rows, and the service-only lifecycle RPC cannot activate or change member identity/role. Ordinary activation remains verified invitation acceptance. Laravel actor provenance remains outstanding.
 - **Phase:** Foundation security remediation. Later introduce person/employment entities for HR without turning membership into an employment record.
 
 ### Company management levels

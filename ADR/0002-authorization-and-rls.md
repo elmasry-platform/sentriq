@@ -10,7 +10,7 @@
 
 The migrations already separate company management levels from functional roles. `private.can_access_hse` applies active membership, active tenant, HSE module entitlement, functional permission, and required scope. `private.has_hse_permission` considers direct permissions and role assignments, including tenant/site/org-unit/task bindings. RLS is enabled and forced on all 39 application tables. The `api` views use `security_invoker=true`. Database constraints bind HSE child records and access scopes to the same tenant.
 
-Local pgTAP and negative tests show that the database is currently the final row boundary. F-01 demonstrates a management lifecycle policy is too broad: row-level tenant isolation alone cannot ensure that the invitation state machine was used. There is no Laravel `AccessResolver` to compare, and no production request path has been verified.
+Local pgTAP and negative tests show that the database is currently the final row boundary. The audit baseline F-01 demonstrated that a management lifecycle policy was too broad: row-level tenant isolation alone cannot ensure that the invitation state machine was used. The follow-up migration removes the direct membership write path; Laravel actor provenance, an `AccessResolver`, and production request paths have not been implemented or verified.
 
 ## Models considered
 
@@ -51,4 +51,4 @@ Service-role and postgres sessions bypass RLS. Use them only for workflows that 
 
 ## Consequences
 
-Laravel owns request ergonomics and orchestration, but PostgreSQL remains the final row boundary. Database constraints protect relationships and immutable workflow facts even when a caller reaches the database without the expected UI. The chosen model reuses the current Supabase Auth/RLS shape and supports future Operations data under the same tenant boundary, with separate permission keys and module entitlements. F-01 must be remediated before relying on the invitation state machine.
+Laravel owns request ergonomics and orchestration, but PostgreSQL remains the final row boundary. Database constraints protect relationships and immutable workflow facts even when a caller reaches the database without the expected UI. The chosen model reuses the current Supabase Auth/RLS shape and supports future Operations data under the same tenant boundary, with separate permission keys and module entitlements. The F-01 table-write bypass is closed in the follow-up database branch; the application still must bind service-role actor UUIDs to verified identities before relying on the invitation state machine in production.

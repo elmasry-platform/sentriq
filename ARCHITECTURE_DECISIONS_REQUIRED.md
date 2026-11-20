@@ -38,6 +38,8 @@ Each decision calls out the product-owner approval point. Security controls must
 
 **Recommendation:** A. This is a pre-onboarding security remediation, not an optional product preference. Bulk import can create pending invitations and require normal acceptance.
 
+**Implementation status:** The follow-up database migration has revoked direct membership writes and added a service-only suspend/end RPC; it cannot activate or alter identity/management level. Ordinary membership activation requires verified invitation acceptance. The historical F-01 evidence above describes the audit baseline. Trusted Laravel actor provenance remains a production gate.
+
 **Product owner approval:** Approve whether invitations are the only activation path and whether a bulk importer may create pending, never active, memberships.
 
 ## D-03 — Management authority and Company Admin delegation
@@ -72,6 +74,8 @@ Each decision calls out the product-owner approval point. Security controls must
 **Data-model impact:** Current private.has_module_entitlement is tenant-only, while feature evaluation accepts optional membership scope. Current issue_entitlement_grant accepts member-scoped module grant but evaluator ignores it (F-02).
 
 **Recommendation:** A. Reject membership-scoped module grant requests explicitly. Retain member scope only for feature exceptions.
+
+**Implementation status:** The follow-up migration adds a module-scope check constraint and explicit RPC rejection. It preflights incompatible existing rows and aborts with their grant IDs; it does not rewrite historical grants.
 
 **Product owner approval:** Confirm that module availability is always tenant-wide and that a tenant may enable a module while feature access is restricted to specific memberships.
 

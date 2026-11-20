@@ -4,6 +4,8 @@ $migrations = Get-ChildItem (Join-Path $root 'supabase/migrations') -Filter '*.s
 $sql = (($migrations | ForEach-Object { Get-Content -Raw $_.FullName }) -join "`n").ToLowerInvariant()
 $forwardMigrations = @($migrations | Where-Object { $_.Name -ne '202611190001_sentriq_hse.sql' })
 $forwardSql = (($forwardMigrations | ForEach-Object { Get-Content -Raw $_.FullName }) -join "`n").ToLowerInvariant()
+$remediationMigration = Join-Path $root 'supabase/migrations/202611200002_foundation_security_remediation.sql'
+$remediationSql = (Get-Content -Raw $remediationMigration).ToLowerInvariant()
 $required = @(
   'core.features', 'core.plans', 'core.plan_entitlements', 'core.subscriptions',
   'core.subscription_items', 'core.entitlement_grants', 'core.usage_events', 'core.invoices',
@@ -40,14 +42,63 @@ if (-not $tenantFunction.Success -or $tenantFunction.Groups[1].Value -match '(?i
 if ($sql -notmatch 'grant execute on function api\.record_feature_usage\(uuid,uuid,text,text,numeric,text,jsonb\) to service_role') {
   throw 'The usage recorder is not granted to service_role.'
 }
+$remediationRequired = @(
+  'drop policy if exists membership_insert on iam.memberships',
+  'drop policy if exists membership_update on iam.memberships',
+  'revoke all privileges on iam.memberships from anon, authenticated, service_role',
+  'grant select on iam.memberships to authenticated',
+  'api.set_membership_status',
+  "p_status not in ('suspended','ended')",
+  'entitlement_grants_module_tenant_scope',
+  'module_grants_are_tenant_scoped',
+  'alter default privileges for role postgres',
+  'revoke execute on functions from public',
+  'revoke execute on functions from public, anon, authenticated, service_role'
+)
+$missingRemediation = @($remediationRequired | Where-Object { $remediationSql -notmatch [regex]::Escape($_) })
+if ($missingRemediation.Count -gt 0) { throw "Missing remediation migration markers: $($missingRemediation -join ', ')" }
+if ($remediationSql -match 'create\s+table\s+if\s+not\s+exists|hse\.(incidents|risks|permits)') {
+  throw 'The remediation migration contains hidden schema creation or future HSE domains.'
+}
+if ($migrations[-1].Name -ne '202611200002_foundation_security_remediation.sql') {
+  throw 'The forward remediation migration is not the latest migration timestamp.'
+}
 $concurrencyHarness = Join-Path $root 'scripts/test_database_concurrency.ps1'
 if (-not (Test-Path -LiteralPath $concurrencyHarness)) { throw 'The separate database concurrency harness is missing.' }
+$concurrencySql = Get-Content -Raw $concurrencyHarness
+if ($concurrencySql -notmatch '\[guid\]::NewGuid\(\)' -or $concurrencySql -notmatch '(?is)try\s*\{.*?finally\s*\{') {
+  throw 'The concurrency harness must use unique IDs and guarantee cleanup in finally.'
+}
+if ($concurrencySql -notmatch 'Stop-Job' -or $concurrencySql -notmatch 'Wait-Job' -or $concurrencySql -notmatch 'cleanup verification found zero synthetic rows') {
+  throw 'The concurrency harness must stop or wait for jobs and fail if exact fixtures remain.'
+}
+if ($concurrencySql -match '(?im)^\s*(truncate\s+|delete\s+from\s+\w+\.\w+\s*;|delete\s+from\s+\w+\.\w+\s+where\s+true\b)') {
+  throw 'The concurrency harness contains an unscoped cleanup operation.'
+}
+$failureCleanup = Join-Path $root 'scripts/verify_database_concurrency_failure_cleanup.ps1'
+if (-not (Test-Path -LiteralPath $failureCleanup)) { throw 'The injected concurrency cleanup verification script is missing.' }
+if ($concurrencySql -notmatch 'InjectFailureAfterSetup') { throw 'The concurrency harness is missing its failure-path fixture injection.' }
+$catalogChecks = Join-Path $root 'scripts/security_catalog_checks.ps1'
+if (-not (Test-Path -LiteralPath $catalogChecks)) { throw 'The security catalog check script is missing.' }
+$catalogSql = Get-Content -Raw $catalogChecks
+foreach ($marker in @('v_expected_authenticated','v_expected_service','search_path=""','aclexplode','__codex_default_acl_probe','has_any_column_privilege','iam.memberships')) {
+  if ($catalogSql -notmatch [regex]::Escape($marker)) { throw "Security catalog checks are missing: $marker" }
+}
 $workflow = Get-Content -Raw (Join-Path $root '.github/workflows/database.yml')
-if ($workflow -notmatch 'test_database_concurrency\.ps1') { throw 'Database CI does not execute the concurrency harness.' }
+foreach ($marker in @('check_database_contract.ps1','security_review_probes.ps1','security_catalog_checks.ps1','test_database_concurrency.ps1','verify_database_concurrency_failure_cleanup.ps1','supabase db reset --local','supabase test db --local','supabase db lint --local','supabase stop --no-backup')) {
+  if ($workflow -notmatch [regex]::Escape($marker)) { throw "Database CI does not include required validation step: $marker" }
+}
+$sequence = @('supabase db reset --local','supabase test db --local','security_review_probes.ps1','security_catalog_checks.ps1','test_database_concurrency.ps1','verify_database_concurrency_failure_cleanup.ps1','supabase test db --local','test_database_concurrency.ps1','supabase test db --local','supabase db lint --local')
+$lastIndex = -1
+foreach ($marker in $sequence) {
+  $index = $workflow.IndexOf($marker,$lastIndex+1,[System.StringComparison]::OrdinalIgnoreCase)
+  if ($index -lt 0) { throw "Database CI repeatability sequence is missing or out of order at: $marker" }
+  $lastIndex = $index
+}
 $test = Get-Content -Raw (Join-Path $root 'supabase/tests/database/entitlements_rbac.test.sql')
 $planMatch = [regex]::Match($test, 'extensions\.plan\((\d+)\)')
 $assertionCount = [regex]::Matches($test, 'extensions\.(ok|is|throws_ok|lives_ok|throws_like|cmp_ok|results_eq|set_eq)\(').Count
 if (-not $planMatch.Success -or [int]$planMatch.Groups[1].Value -ne $assertionCount) {
   throw "pgTAP plan/count mismatch: plan=$($planMatch.Groups[1].Value), assertions=$assertionCount"
 }
-Write-Output "PASS: $($required.Count) static contract markers, legacy FOR ALL policies are dropped and not reintroduced, service_role-only usage recording, CI concurrency harness, and $assertionCount synchronized pgTAP assertions."
+Write-Output "PASS: $($required.Count) base and $($remediationRequired.Count) remediation markers, F-01/F-02 forward migration, F-03 exact cleanup harness, P-05 catalog checks, ordered CI repeatability sequence, and $assertionCount synchronized pgTAP assertions."

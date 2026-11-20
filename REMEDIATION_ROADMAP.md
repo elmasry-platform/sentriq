@@ -1,6 +1,6 @@
 # SENTRIQ Remediation Roadmap
 
-This roadmap is advisory. No schema or product behavior was changed during the independent review.
+This roadmap preserves the recommendations from the independent review. The status notes below record the follow-up branch `codex/foundation-security-remediation`; they do not claim hosted validation or production readiness.
 
 ## P0 — Critical security or integrity blockers
 
@@ -10,6 +10,8 @@ No Critical finding was confirmed in the reviewed local implementation.
 
 ### P1-01 Close direct membership activation bypass (F-01)
 
+**Status:** Database remediation implemented in `202611200002_foundation_security_remediation.sql`; actual-role pgTAP and security probes pass. Direct `INSERT`/`UPDATE`/`DELETE` on memberships is revoked for API roles, write policies are dropped, and `api.set_membership_status` permits only suspension/ending through `service_role`. Only verified invitation acceptance activates ordinary memberships. P-01 actor provenance remains an application gate.
+
 - **Objects/files:** `iam.memberships`; `membership_insert`/`membership_update` policies in `supabase/migrations/202611190002_commercial_entitlements_rbac.sql`; `api.accept_invitation` in `supabase/migrations/202611200001_database_stabilization.sql`; new forward migration and database tests.
 - **Recommended change:** Remove authenticated direct insert. Restrict authenticated updates to profile fields; status, management level, and identity/email transitions must go through a narrow lifecycle API. Preserve owner-controlled Superadmin management and invitation acceptance as the only ordinary onboarding activation path.
 - **Dependencies:** Decide whether company Superadmins may change an already-active employee's email or level, and how suspended/ended memberships are reinstated. Do not rely on RLS alone if column grants still allow lifecycle writes.
@@ -17,6 +19,8 @@ No Critical finding was confirmed in the reviewed local implementation.
 - **Acceptance criteria:** Only verified invitation acceptance activates ordinary users; no client table write can bypass the state machine; all transitions emit auditable actor and invitation evidence; all pgTAP and negative probe cases pass.
 
 ### P1-02 Resolve module-grant scope semantics (F-02)
+
+**Status:** Resolved in the forward migration: module grants are company-scoped; feature grants may be membership-scoped and remain behind the company module. Incompatible historical rows are reported by migration preflight and are never rewritten automatically. Regression tests pass.
 
 - **Objects/files:** `api.issue_entitlement_grant`, `private.has_module_entitlement`, `private.has_feature_entitlement` in `supabase/migrations/202611200001_database_stabilization.sql`; product entitlement contract.
 - **Recommended change:** Either reject non-null `p_membership_id` when `p_module_key` is set, or make module entitlement evaluation membership-aware and ensure a member-specific module still never activates the module for other members.
@@ -26,6 +30,8 @@ No Critical finding was confirmed in the reviewed local implementation.
 
 ### P1-03 Approve identity and authorization decisions before Laravel integration
 
+**Status:** Outstanding. The identity/authorization ADRs and the missing Laravel implementation remain owner and backend integration work.
+
 - **Objects/files:** `ADR/0001-identity-and-authentication.md`; `ADR/0002-authorization-and-rls.md`; current `auth.uid()`/`auth.role()` use and `SECURITY DEFINER` API functions.
 - **Recommended change:** Approve Supabase Auth as initial identity source and define exact Laravel token/session and user-scoped database path. Reject client-supplied actor UUIDs. Decide whether Laravel uses PostgREST with the user JWT or a constrained direct-DB connection with transaction-local claims.
 - **Dependencies:** Owner decision, Laravel framework/version, Supabase Auth project configuration, and deployment topology.
@@ -33,6 +39,8 @@ No Critical finding was confirmed in the reviewed local implementation.
 - **Acceptance criteria:** Signed identity provenance documented and tested end-to-end; service credentials unavailable to browser; authorization parity suite is part of CI.
 
 ### P1-04 Protect platform operator accounts with MFA/step-up
+
+**Status:** Outstanding. This repository has no hosted Auth policy or Laravel middleware to configure or verify.
 
 - **Objects/files:** Supabase Auth configuration and Laravel authorization middleware for `api.manage_subowner`, entitlement grant/revoke, module/feature switches, plan/subscription updates.
 - **Recommended change:** Require MFA for Owner and Subowner sign-in, and a verified step-up/AAL claim for sensitive platform operations. Define recovery and break-glass access.
@@ -42,6 +50,8 @@ No Critical finding was confirmed in the reviewed local implementation.
 
 ### P1-05 Make database verification repeatable (F-03)
 
+**Status:** Implemented. The concurrency harness uses unique fixture IDs, exact marker-scoped cleanup in `finally`, waits for or stops workers first, and verifies zero remaining fixture/audit rows. Normal and injected-failure runs both verified zero leftovers. From a fresh reset, pgTAP passed 242/242 three times with two successful concurrency runs between them.
+
 - **Objects/files:** `scripts/test_database_concurrency.ps1`; `.github/workflows/database.yml`; database test instructions.
 - **Recommended change:** Run concurrency in a disposable isolated database/branch, or capture and remove every synthetic row in dependency order. Ensure failure paths also clean up.
 - **Dependencies:** Supabase CLI branch/database lifecycle and CI runner setup.
@@ -50,6 +60,8 @@ No Critical finding was confirmed in the reviewed local implementation.
 
 ### P1-06 Pin service actor provenance
 
+**Status:** Outstanding (P-01). The database validates actor membership/role where implemented, but cannot prove Laravel derived supplied UUIDs from a verified human JWT while using `service_role`.
+
 - **Objects/files:** Laravel controllers/jobs calling `api.create_invitation`, `api.accept_invitation`, `api.record_feature_usage`, and invoice RPCs.
 - **Recommended change:** Derive user and membership IDs from verified server context; resolve current tenant membership server-side; reject arbitrary actor IDs in user-facing DTOs. For background jobs, record a job identity and initiating actor separately.
 - **Dependencies:** P1-03 identity decision and Laravel implementation.
@@ -57,6 +69,8 @@ No Critical finding was confirmed in the reviewed local implementation.
 - **Acceptance criteria:** No request payload can select the audit actor or identity being invited/accepted; audit actor has verifiable provenance.
 
 ### P1-07 Harden default function privileges
+
+**Status:** Implemented and locally catalog-checked for the `postgres` migration owner. New SECURITY DEFINER routines in `api` and `private` receive no EXECUTE for `PUBLIC`, `anon`, `authenticated`, or `service_role` unless a migration grants it explicitly. Confirm the hosted migration/object owner before deployment.
 
 - **Objects/files:** PostgreSQL default privileges for the migration owner in `api` and `private`; `.github/workflows/database.yml`; a catalog assertion in database verification.
 - **Recommended change:** Revoke default EXECUTE from `PUBLIC`, `anon`, `authenticated`, and `service_role` for future functions in exposed/sensitive schemas. Grant the intended role explicitly per RPC.

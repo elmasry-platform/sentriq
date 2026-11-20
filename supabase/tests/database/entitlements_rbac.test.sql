@@ -1,8 +1,12 @@
 create extension if not exists pgtap with schema extensions;
 begin;
-grant usage on schema extensions to authenticated;
-grant execute on all functions in schema extensions to authenticated;
-select extensions.plan(197);
+grant usage on schema extensions to anon, authenticated, service_role;
+grant execute on all functions in schema extensions to anon, authenticated, service_role;
+-- The transactional pgTAP harness grants temporary read access so actual-role
+-- RPC calls can be checked against their resulting rows. These grants roll back.
+grant usage on schema core,iam,audit to service_role;
+grant select on all tables in schema core,iam,audit to service_role;
+select extensions.plan(242);
 
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at) values
  ('00000000-0000-0000-0000-000000000001','authenticated','authenticated','owner@example.test','',now(),'{}','{}',now(),now()),
@@ -15,7 +19,10 @@ insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,r
  ('00000000-0000-0000-0000-000000000008','authenticated','authenticated','unverified@example.test','',null,'{}','{}',now(),now()),
  ('00000000-0000-0000-0000-000000000009','authenticated','authenticated','wrong@example.test','',now(),'{}','{}',now(),now()),
  ('00000000-0000-0000-0000-000000000010','authenticated','authenticated','newtenant-admin@example.test','',now(),'{}','{}',now(),now()),
- ('00000000-0000-0000-0000-000000000011','authenticated','authenticated','reactivate@example.test','',now(),'{}','{}',now(),now());
+ ('00000000-0000-0000-0000-000000000011','authenticated','authenticated','reactivate@example.test','',now(),'{}','{}',now(),now()),
+ ('00000000-0000-0000-0000-000000000012','authenticated','authenticated','invited-bypass@example.test','',now(),'{}','{}',now(),now()),
+ ('00000000-0000-0000-0000-000000000013','authenticated','authenticated','suspended-bypass@example.test','',now(),'{}','{}',now(),now()),
+ ('00000000-0000-0000-0000-000000000014','authenticated','authenticated','tenant-b-second-employee@example.test','',now(),'{}','{}',now(),now());
 select private.bootstrap_platform_owner('00000000-0000-0000-0000-000000000001');
 insert into iam.platform_operators(user_id,operator_role,created_by) values('00000000-0000-0000-0000-000000000007','subowner','00000000-0000-0000-0000-000000000001');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true);
@@ -29,9 +36,12 @@ insert into iam.memberships(id,tenant_id,user_id,member_role,status,email) value
  ('10000000-0000-0000-0000-000000000003','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','00000000-0000-0000-0000-000000000004','employee','active','reviewer@example.test'),
  ('10000000-0000-0000-0000-000000000004','bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','00000000-0000-0000-0000-000000000005','employee','active','other@example.test'),
  ('10000000-0000-0000-0000-000000000005','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','00000000-0000-0000-0000-000000000006','employee','active','task@example.test'),
- ('10000000-0000-0000-0000-000000000006','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','00000000-0000-0000-0000-000000000009','employee','active','wrong@example.test'),
+ ('10000000-0000-0000-0000-000000000006','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','00000000-0000-0000-0000-000000000009','company_superadmin','suspended','wrong@example.test'),
  ('10000000-0000-0000-0000-000000000007','bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','00000000-0000-0000-0000-000000000004','company_superadmin','active','reviewer@example.test'),
- ('10000000-0000-0000-0000-000000000008','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','00000000-0000-0000-0000-000000000011','employee','active','reactivate@example.test');
+ ('10000000-0000-0000-0000-000000000008','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','00000000-0000-0000-0000-000000000011','employee','active','reactivate@example.test'),
+ ('10000000-0000-0000-0000-000000000009','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','00000000-0000-0000-0000-000000000012','employee','invited','invited-bypass@example.test'),
+ ('10000000-0000-0000-0000-000000000010','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','00000000-0000-0000-0000-000000000013','employee','suspended','suspended-bypass@example.test'),
+ ('10000000-0000-0000-0000-000000000011','bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','00000000-0000-0000-0000-000000000014','employee','active','tenant-b-second-employee@example.test');
 insert into core.tenant_entitlements(tenant_id,module_key,status,changed_by)
  values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','hse','active','00000000-0000-0000-0000-000000000001');
 insert into core.entitlement_grants(tenant_id,module_key,starts_at,expires_at,granted_by,reason,billing_treatment,source_kind,legacy_entitlement_id)
@@ -97,9 +107,22 @@ select extensions.ok(private.has_module_entitlement('aaaaaaaa-aaaa-aaaa-aaaa-aaa
 select extensions.ok(not private.has_feature_entitlement('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000002','hse.copilot'),'HSE does not implicitly license Copilot');
 select extensions.ok(not has_function_privilege('authenticated','private.has_module_entitlement(uuid,text)','EXECUTE'),'authenticated callers cannot query arbitrary module entitlement helper');
 select extensions.ok(not has_function_privilege('authenticated','private.has_hse_permission(uuid,uuid,text,uuid,boolean,text,uuid)','EXECUTE'),'authenticated callers cannot query arbitrary membership permission helper');
-insert into core.entitlement_grants(tenant_id,module_key,starts_at,expires_at,granted_by,reason,billing_treatment)
- values('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','hse',now()-interval '1 minute',now()+interval '1 day','00000000-0000-0000-0000-000000000001','Active module test','complimentary');
+select extensions.ok(not has_table_privilege('authenticated','iam.memberships','INSERT') and not has_table_privilege('authenticated','iam.memberships','UPDATE') and not has_table_privilege('authenticated','iam.memberships','DELETE'),'authenticated has no direct membership write grants');
+select extensions.ok(not has_table_privilege('service_role','iam.memberships','INSERT') and not has_table_privilege('service_role','iam.memberships','UPDATE') and not has_table_privilege('service_role','iam.memberships','DELETE'),'service_role must use narrow lifecycle RPCs rather than direct membership table writes');
+select extensions.ok(not has_table_privilege('anon','iam.memberships','INSERT') and not has_table_privilege('anon','iam.memberships','UPDATE') and not has_table_privilege('anon','iam.memberships','DELETE'),'anon has no direct membership write grants');
+select extensions.throws_ok($$insert into core.entitlement_grants(tenant_id,module_key,membership_id,starts_at,expires_at,granted_by,reason,billing_treatment) values('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','hse','10000000-0000-0000-0000-000000000004',now(),now()+interval '1 day','00000000-0000-0000-0000-000000000001','Invalid member module grant','complimentary')$$,'23514',null,'table constraint rejects membership-scoped module grants');
+set local role authenticated;
+select extensions.throws_ok($$select api.issue_entitlement_grant('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','hse',null,'10000000-0000-0000-0000-000000000004',now(),now()+interval '1 day','Invalid member module grant','complimentary',null,null,null)$$,'22023',null,'grant RPC rejects membership-scoped module grants explicitly');
+select extensions.lives_ok($$select api.issue_entitlement_grant('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',null,'hse.copilot','10000000-0000-0000-0000-000000000004',now()-interval '1 minute',now()+interval '1 day','Member feature exception','complimentary',null,null,null)$$,'grant RPC accepts a member-scoped feature exception');
+reset role;
+select extensions.ok(not private.has_module_entitlement('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','hse'),'member-scoped feature grant does not activate its parent company module');
+select extensions.ok(not private.has_feature_entitlement('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','10000000-0000-0000-0000-000000000004','hse.copilot'),'member-scoped feature remains ineffective while parent module is absent');
+set local role authenticated;
+select api.issue_entitlement_grant('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','hse',null,null,now()-interval '1 minute',now()+interval '1 day','Active module test','complimentary',null,null,null);
+reset role;
 select extensions.ok(private.has_module_entitlement('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','hse'),'active module grant enables the module');
+select extensions.ok(private.has_feature_entitlement('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','10000000-0000-0000-0000-000000000004','hse.copilot'),'member feature grant is effective once its company module is active');
+select extensions.ok(not private.has_feature_entitlement('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','10000000-0000-0000-0000-000000000011','hse.copilot'),'member feature grant does not leak to another tenant membership');
 update core.entitlement_grants set status='suspended' where tenant_id='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' and module_key='hse';
 select extensions.ok(not private.has_module_entitlement('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','hse'),'suspended module grant denies access');
 update core.entitlement_grants set status='active' where tenant_id='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' and module_key='hse';
@@ -209,10 +232,13 @@ select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000003'
 select extensions.throws_ok($$select * from api.list_my_entitlements('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')$$,'42501',null,'Employee cannot read entitlement administration RPC');
 select set_config('request.jwt.claim.role','service_role',true);
 set local role service_role;
+select extensions.is(current_user::text,'service_role'::text,'usage RPC tests use the actual service_role SQL role');
 select api.record_feature_usage('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000001','hse.copilot','usage-test-key-0001',1,'request','{}'::jsonb);
 select api.record_feature_usage('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000001','hse.copilot','usage-test-key-0001',1,'request','{}'::jsonb);
 reset role;
 select extensions.is((select count(*)::integer from core.usage_events where idempotency_key='usage-test-key-0001'),1,'usage retry with same idempotency key creates one event');
+set local role service_role;
+select extensions.is(current_user::text,'service_role'::text,'usage replay and rejection tests use the actual service_role SQL role');
 select extensions.is((select api.record_feature_usage('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000001','hse.copilot','usage-test-key-0001',1,'request','{}'::jsonb)),(select id from core.usage_events where idempotency_key='usage-test-key-0001'),'exact usage retry returns original event after exhausting quota');
 select extensions.throws_ok($$select api.record_feature_usage('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000001','hse.copilot','usage-test-key-0001',2,'request','{}'::jsonb)$$,'23505',null,'idempotency key cannot be reused with different usage');
 select extensions.throws_ok($$select api.record_feature_usage('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000001','hse.copilot','usage-test-key-0001',1,'minute','{}'::jsonb)$$,'23505',null,'idempotency key compares usage unit');
@@ -223,6 +249,10 @@ select extensions.throws_ok($$select api.record_feature_usage('bbbbbbbb-bbbb-bbb
 select extensions.throws_ok($$select api.record_feature_usage('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000001','hse.copilot','usage-test-key-0002',1,'minute','{}'::jsonb)$$,'22023',null,'new usage rejects a unit that does not match the feature');
 select extensions.throws_ok($$select api.record_feature_usage('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000001','hse.copilot','usage-test-key-0002',1,'request','{"prompt":"not allowed"}'::jsonb)$$,'42501',null,'usage ledger rejects prompt content');
 select extensions.ok(has_function_privilege('service_role','api.record_feature_usage(uuid,uuid,text,text,numeric,text,jsonb)','EXECUTE') and has_function_privilege('service_role','api.invoice_usage_event(uuid,uuid,text)','EXECUTE'),'trusted service role has the only usage and invoice RPC execution path');
+reset role;
+select set_config('request.jwt.claim.role','service_role',true);
+set local role service_role;
+select extensions.is(current_user::text,'service_role'::text,'invitation RPC tests use the actual service_role SQL role');
 create temp table invitation_capture(invitation_id uuid,token text) on commit drop;
 insert into invitation_capture select invitation_id,token from api.create_invitation('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','other@example.test','company_admin','00000000-0000-0000-0000-000000000002',interval '7 days');
 select extensions.is((select octet_length(token_hash)::integer from iam.invitations where id=(select invitation_id from invitation_capture)),32,'invitation persists only a 32-byte hash');
@@ -233,30 +263,44 @@ select extensions.throws_ok($$select api.create_invitation('aaaaaaaa-aaaa-aaaa-a
 select extensions.throws_ok($$select api.create_invitation('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','forbidden@example.test','employee','00000000-0000-0000-0000-000000000004',interval '7 days')$$,'42501',null,'service caller cannot impersonate a Superadmin from another tenant');
 create temp table expired_invitation_capture(invitation_id uuid,token text) on commit drop;
 insert into expired_invitation_capture select invitation_id,token from api.create_invitation('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','expired-invite@example.test','employee','00000000-0000-0000-0000-000000000002',interval '7 days');
+reset role;
 update iam.invitations set created_at=now()-interval '2 days',expires_at=now()-interval '1 day' where id=(select invitation_id from expired_invitation_capture);
+set local role service_role;
 select extensions.throws_ok($$select api.accept_invitation((select token from expired_invitation_capture),'00000000-0000-0000-0000-000000000009')$$,'22023',null,'expired invitation is denied');
 create temp table reinvite_capture(invitation_id uuid,token text) on commit drop;
 insert into reinvite_capture select invitation_id,token from api.create_invitation('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','reinvite@example.test','employee','00000000-0000-0000-0000-000000000002',interval '7 days');
+reset role;
 update iam.invitations set created_at=now()-interval '2 days',expires_at=now()-interval '1 day' where id=(select invitation_id from reinvite_capture);
+set local role service_role;
 select extensions.lives_ok($$select * from api.create_invitation('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','reinvite@example.test','employee','00000000-0000-0000-0000-000000000002',interval '7 days')$$,'expired pending invite is closed atomically so same email can be reinvited');
 create temp table revoked_invitation_capture(invitation_id uuid,token text) on commit drop;
 insert into revoked_invitation_capture select invitation_id,token from api.create_invitation('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','revoked@example.test','employee','00000000-0000-0000-0000-000000000002',interval '7 days');
+reset role;
 update iam.invitations set revoked_at=now(),revoked_by='00000000-0000-0000-0000-000000000002',revoke_reason='Synthetic test revoke' where id=(select invitation_id from revoked_invitation_capture);
+set local role service_role;
 select extensions.throws_ok($$select api.accept_invitation((select token from revoked_invitation_capture),'00000000-0000-0000-0000-000000000003')$$,'22023',null,'revoked invitation is denied');
 create temp table tenant_b_invitation_capture(invitation_id uuid,token text) on commit drop;
 insert into tenant_b_invitation_capture select invitation_id,token from api.create_invitation('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','tenant-b-invite@example.test','employee','00000000-0000-0000-0000-000000000004',interval '7 days');
+reset role;
+grant select on tenant_b_invitation_capture to authenticated;
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000002',true);
+select set_config('request.jwt.claim.role','authenticated',true);
+set local role authenticated;
 select extensions.throws_ok($$select api.revoke_invitation((select invitation_id from tenant_b_invitation_capture),'Cross tenant attempt')$$,'22023',null,'Company Superadmin cannot revoke another tenant invitation');
+reset role;
 select set_config('request.jwt.claim.role','authenticated',true);
 set local role authenticated;
 select extensions.ok(not has_function_privilege('authenticated','api.accept_invitation(text,uuid)','EXECUTE'),'browser cannot invoke raw-token acceptance RPC');
 reset role;
 select set_config('request.jwt.claim.role','service_role',true);
+set local role service_role;
+select extensions.is(current_user::text,'service_role'::text,'acceptance RPC tests use the actual service_role SQL role');
 select extensions.throws_ok($$select api.accept_invitation((select token from invitation_capture),'00000000-0000-0000-0000-000000000008')$$,'42501',null,'unverified Auth email cannot accept invitation');
 select extensions.throws_ok($$select api.accept_invitation((select token from invitation_capture),'00000000-0000-0000-0000-000000000003')$$,'22023',null,'verified but wrong email cannot accept invitation');
 select extensions.lives_ok($$select api.accept_invitation((select token from invitation_capture),'00000000-0000-0000-0000-000000000005')$$,'verified matching Auth email accepts invitation');
 select extensions.is((select member_role from iam.memberships where tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and user_id='00000000-0000-0000-0000-000000000005'),'company_admin'::text,'invitation provisions only the intended management level');
 select extensions.throws_ok($$select api.accept_invitation((select token from invitation_capture),'00000000-0000-0000-0000-000000000005')$$,'22023',null,'accepted invitation token cannot be replayed');
+reset role;
 select set_config('request.jwt.claim.role','authenticated',true);
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000005',true);
 set local role authenticated;
@@ -269,11 +313,18 @@ select extensions.is((select count(*)::integer from core.invoice_items),0,'Compa
 select extensions.is((select count(*)::integer from core.payments),0,'Company Admin cannot read payments');
 with changed as (update iam.membership_roles set revoked_at=now(),revoked_by='00000000-0000-0000-0000-000000000005',revoke_reason='Privilege test' where membership_id='10000000-0000-0000-0000-000000000002' returning id) select extensions.is((select count(*)::integer from changed),0,'Company Admin cannot grant or revoke functional roles');
 select extensions.throws_ok($$insert into iam.site_access(tenant_id,membership_id,site_id,granted_by) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000005','30000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000005')$$,'42501',null,'Company Admin cannot grant a site scope');
-with changed as (update iam.memberships set member_role='company_superadmin' where id='10000000-0000-0000-0000-000000000002' returning id) select extensions.is((select count(*)::integer from changed),0,'Company Admin cannot change another membership management level');
+select extensions.throws_ok($$insert into iam.memberships(tenant_id,user_id,member_role,status,email) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','00000000-0000-0000-0000-000000000008','employee','active','unverified@example.test')$$,'42501',null,'Company Admin cannot directly insert a membership');
+select extensions.throws_ok($$update iam.memberships set status='suspended' where id='10000000-0000-0000-0000-000000000003'$$,'42501',null,'Company Admin cannot directly suspend a membership');
+select extensions.throws_ok($$update iam.memberships set member_role='company_superadmin' where id='10000000-0000-0000-0000-000000000002'$$,'42501',null,'Company Admin cannot change another membership management level');
+select extensions.ok(not has_function_privilege('authenticated','api.set_membership_status(uuid,uuid,text,uuid,text)','EXECUTE'),'Company Admin cannot invoke trusted membership lifecycle RPC');
+select extensions.throws_ok($$select api.set_membership_status('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000003','suspended','00000000-0000-0000-0000-000000000005','Unauthorized admin attempt')$$,'42501',null,'Company Admin cannot suspend a membership');
+select extensions.ok(not has_function_privilege('authenticated','api.create_invitation(uuid,text,text,uuid,interval)','EXECUTE'),'Company Admin cannot invoke invitation creation');
 select extensions.throws_ok($$select api.issue_entitlement_grant('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',null,'hse.copilot',null,now(),now()+interval '1 day','Denied company grant','complimentary',null,null,null)$$,'42501',null,'Company Admin cannot issue commercial entitlements');
 reset role;
 select set_config('request.jwt.claim.role','service_role',true);
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true);
+set local role service_role;
+select extensions.is(current_user::text,'service_role'::text,'invoice RPC tests use the actual service_role SQL role');
 select api.create_invoice_draft('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','TEST-INV-1','USD',now()-interval '1 day',now()+interval '1 day');
 select extensions.lives_ok($$select api.invoice_usage_event((select id from core.usage_events where idempotency_key='usage-test-key-0001'),(select id from core.invoices where invoice_number='TEST-INV-1'),'Synthetic test usage')$$,'one usage event can be invoiced');
 select extensions.is((select api.invoice_usage_event((select id from core.usage_events where idempotency_key='usage-test-key-0001'),(select id from core.invoices where invoice_number='TEST-INV-1'),'Synthetic test usage')),(select id from core.invoice_items where usage_event_id=(select id from core.usage_events where idempotency_key='usage-test-key-0001')),'invoice retry returns the original line id');
@@ -290,7 +341,16 @@ select set_config('request.jwt.claim.role','authenticated',true);
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000002',true);
 set local role authenticated;
 select extensions.is((select count(*)::integer from core.tenants),1,'Company Superadmin is confined to its own tenant');
-with changed as (update iam.memberships set display_name='Synthetic updated by Superadmin' where id='10000000-0000-0000-0000-000000000002' returning id) select extensions.is((select count(*)::integer from changed),1,'Company Superadmin can manage memberships in its own tenant');
+select extensions.throws_ok($$insert into iam.memberships(tenant_id,user_id,member_role,status,email) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','00000000-0000-0000-0000-000000000008','employee','active','unverified@example.test')$$,'42501',null,'Company Superadmin cannot insert an active membership directly');
+select extensions.throws_ok($$update iam.memberships set status='active' where id='10000000-0000-0000-0000-000000000009'$$,'42501',null,'Company Superadmin cannot activate an invited membership directly');
+select extensions.throws_ok($$update iam.memberships set status='active' where id='10000000-0000-0000-0000-000000000010'$$,'42501',null,'Company Superadmin cannot reactivate a suspended membership directly');
+select extensions.throws_ok($$update iam.memberships set member_role='company_superadmin' where id='10000000-0000-0000-0000-000000000003'$$,'42501',null,'Company Superadmin cannot directly change a member management level');
+select extensions.throws_ok($$update iam.memberships set user_id='00000000-0000-0000-0000-000000000008' where id='10000000-0000-0000-0000-000000000003'$$,'42501',null,'Company Superadmin cannot directly reassign a member identity');
+select extensions.throws_ok($$update iam.memberships set tenant_id='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' where id='10000000-0000-0000-0000-000000000003'$$,'42501',null,'Company Superadmin cannot directly move a membership across tenants');
+select extensions.throws_ok($$update iam.memberships set email='forged@example.test' where id='10000000-0000-0000-0000-000000000003'$$,'42501',null,'Company Superadmin cannot directly change a verified membership email');
+select extensions.throws_ok($$update iam.memberships set display_name='Synthetic profile edit' where id='10000000-0000-0000-0000-000000000003'$$,'42501',null,'No direct membership profile-column write is granted');
+select extensions.throws_ok($$update iam.memberships set email='cross-tenant@example.test' where id='10000000-0000-0000-0000-000000000007'$$,'42501',null,'Company Superadmin cannot manipulate a cross-tenant membership');
+select extensions.ok(not has_function_privilege('authenticated','api.set_membership_status(uuid,uuid,text,uuid,text)','EXECUTE'),'Company Superadmin cannot call the trusted membership lifecycle RPC directly');
 select extensions.is((select count(*)::integer from core.features),0,'company Superadmin cannot read internal feature catalog');
 select extensions.is((select count(*)::integer from core.plans),0,'company Superadmin cannot read plan prices');
 select extensions.is((select count(*)::integer from core.plan_entitlements),0,'company Superadmin cannot read plan rates or quota');
@@ -339,12 +399,19 @@ insert into iam.task_assignments(tenant_id,membership_id,task_kind,task_id,assig
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000011',true);
 select extensions.ok(private.can_access_hse('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','hse.findings.read','30000000-0000-0000-0000-000000000001',false,null,null),'reactivation fixture initially has direct HSE access');
 select extensions.ok(private.has_hse_permission('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000008','hse.inspections.read','30000000-0000-0000-0000-000000000001',false,'inspection','60000000-0000-0000-0000-000000000001'),'reactivation fixture initially has task-scoped access');
-update iam.memberships set status='suspended' where id='10000000-0000-0000-0000-000000000008';
+select set_config('request.jwt.claim.role','service_role',true);
+set local role service_role;
+select extensions.is(current_user::text,'service_role'::text,'membership suspension uses the actual service_role SQL role');
+select api.set_membership_status('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000008','suspended','00000000-0000-0000-0000-000000000002','Verified re-invitation required');
+reset role;
 select extensions.ok(not private.can_access_hse('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','hse.findings.read','30000000-0000-0000-0000-000000000001',false,null,null),'suspended membership immediately loses HSE access');
 select set_config('request.jwt.claim.role','service_role',true);
+set local role service_role;
 create temp table reactivation_invitation_capture(invitation_id uuid,token text) on commit drop;
 insert into reactivation_invitation_capture select invitation_id,token from api.create_invitation('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','reactivate@example.test','employee','00000000-0000-0000-0000-000000000002',interval '7 days');
 select extensions.lives_ok($$select api.accept_invitation((select token from reactivation_invitation_capture),'00000000-0000-0000-0000-000000000011')$$,'verified invite reactivates suspended membership');
+reset role;
+select set_config('request.jwt.claim.role','authenticated',true);
 select extensions.is((select count(*)::integer from iam.membership_roles where membership_id='10000000-0000-0000-0000-000000000008' and revoked_at is null),0,'reactivation revokes all prior functional roles');
 select extensions.is((select count(*)::integer from iam.membership_role_sites where tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and membership_role_id in (select id from iam.membership_roles where membership_id='10000000-0000-0000-0000-000000000008') and revoked_at is null),0,'reactivation revokes prior role site bindings');
 select extensions.is((select count(*)::integer from iam.membership_role_org_units where tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and membership_role_id in (select id from iam.membership_roles where membership_id='10000000-0000-0000-0000-000000000008') and revoked_at is null),0,'reactivation revokes prior role organization bindings');
@@ -440,6 +507,11 @@ reset role;
 select set_config('request.jwt.claim.role','anon',true);
 select extensions.ok(not has_table_privilege('anon','core.plans','SELECT') and not has_table_privilege('anon','core.invoices','SELECT') and not has_table_privilege('anon','core.payments','SELECT'),'anon has no commercial-data table privileges');
 select extensions.ok(not has_function_privilege('anon','api.record_feature_usage(uuid,uuid,text,text,numeric,text,jsonb)','EXECUTE') and not has_function_privilege('anon','api.accept_invitation(text,uuid)','EXECUTE'),'anon cannot invoke trusted billing or invitation RPCs');
+set local role anon;
+select extensions.is(current_user::text,'anon'::text,'anonymous access checks use the actual anon SQL role');
+select extensions.throws_ok($$insert into iam.memberships(tenant_id,user_id,member_role,status,email) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','00000000-0000-0000-0000-000000000008','employee','active','unverified@example.test')$$,'42501',null,'anon cannot insert a membership');
+select extensions.throws_ok($$update iam.memberships set status='active' where id='10000000-0000-0000-0000-000000000009'$$,'42501',null,'anon cannot activate an invited membership');
+reset role;
 select set_config('request.jwt.claim.role','authenticated',true);
 select extensions.ok(not has_table_privilege('authenticated','hse.follow_ups','DELETE'),'authenticated has no hard-delete privilege');
 select extensions.ok(not has_table_privilege('authenticated','iam.memberships','DELETE') and not has_table_privilege('authenticated','iam.member_permissions','DELETE') and not has_table_privilege('authenticated','core.entitlement_grants','DELETE') and not has_table_privilege('authenticated','core.usage_events','DELETE') and not has_table_privilege('authenticated','core.invoice_items','DELETE') and not has_table_privilege('authenticated','core.payments','DELETE'),'business history tables have no authenticated DELETE grants');
@@ -489,5 +561,22 @@ set local role authenticated;
 select extensions.lives_ok($$select api.manage_subowner('00000000-0000-0000-0000-000000000008',false)$$,'Owner can deactivate a reactivated Subowner');
 select extensions.throws_ok($$select api.manage_subowner('00000000-0000-0000-0000-000000000010',true)$$,'23514',null,'Owner cannot make a company member a Subowner');
 reset role;
+select set_config('request.jwt.claim.role','service_role',true);
+set local role service_role;
+select extensions.is(current_user::text,'service_role'::text,'membership lifecycle authorization tests use the actual service_role SQL role');
+select extensions.throws_ok($$select api.set_membership_status('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','10000000-0000-0000-0000-000000000011','active','00000000-0000-0000-0000-000000000004','Attempt activation')$$,'42501',null,'trusted status RPC does not expose activation');
+select extensions.throws_ok($$select api.set_membership_status('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','10000000-0000-0000-0000-000000000004','suspended','00000000-0000-0000-0000-000000000002','Cross tenant attempt')$$,'42501',null,'Company Superadmin cannot use lifecycle RPC against another tenant');
+select extensions.throws_ok($$select api.set_membership_status('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000003','suspended','00000000-0000-0000-0000-000000000005','Admin actor attempt')$$,'42501',null,'Company Admin is not authorized as a membership lifecycle actor');
+select extensions.throws_ok($$select api.set_membership_status('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','10000000-0000-0000-0000-000000000007','suspended','00000000-0000-0000-0000-000000000004','Self suspension attempt')$$,'42501',null,'Company Superadmin cannot suspend itself through the lifecycle RPC');
+select extensions.throws_ok($$select api.set_membership_status('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000006','ended','00000000-0000-0000-0000-000000000002','Peer promotion-level attempt')$$,'42501',null,'Company Superadmin cannot end another suspended Company Superadmin');
+select extensions.lives_ok($$select api.set_membership_status('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','10000000-0000-0000-0000-000000000011','suspended','00000000-0000-0000-0000-000000000004','Synthetic service lifecycle test')$$,'Company Superadmin can suspend an employee through trusted lifecycle RPC');
+reset role;
+select extensions.is((select status from iam.memberships where id='10000000-0000-0000-0000-000000000011'),'suspended'::text,'trusted lifecycle RPC applies the requested suspension');
+set local role service_role;
+select extensions.throws_ok($$select api.set_membership_status('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','10000000-0000-0000-0000-000000000011','active','00000000-0000-0000-0000-000000000004','Attempt reactivation')$$,'42501',null,'trusted status RPC cannot reactivate an actually suspended membership');
+select extensions.lives_ok($$select api.set_membership_status('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','10000000-0000-0000-0000-000000000011','ended','00000000-0000-0000-0000-000000000004','Synthetic lifecycle end')$$,'Company Superadmin can end a suspended membership through trusted lifecycle RPC');
+reset role;
+select extensions.is((select status from iam.memberships where id='10000000-0000-0000-0000-000000000011'),'ended'::text,'trusted lifecycle RPC applies the ended status');
+select extensions.ok(exists(select 1 from audit.events where action_key='iam.membership.status_changed' and record_id='10000000-0000-0000-0000-000000000011' and summary->>'after_status'='ended'),'membership lifecycle changes emit an audit event');
 select * from extensions.finish();
 rollback;

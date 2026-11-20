@@ -69,7 +69,12 @@ values('sentriq-hse-evidence','$evidenceKeyB','{"mimetype":"text/plain"}'::jsonb
 
 set local request.jwt.claim.sub='$platformOwner';
 set local role authenticated;
-select 'MEMBERSHIP_MODULE_GRANT_ACCEPTED='||(api.issue_entitlement_grant('$tenantA','hse',null,'$superAMembership',now(),now()+interval '1 day','Audit membership module grant','complimentary',null,null,null) is not null);
+do `$`$ begin
+  perform api.issue_entitlement_grant('$tenantA','hse',null,'$superAMembership',now(),now()+interval '1 day','Audit membership module grant','complimentary',null,null,null);
+  raise exception 'AUDIT_PROBE_UNEXPECTED_MEMBER_MODULE_GRANT_SUCCEEDED';
+exception when sqlstate '22023' then
+  raise notice 'MEMBERSHIP_MODULE_GRANT=blocked';
+end `$`$;
 reset role;
 set local request.jwt.claim.sub='$superA';
 set local role authenticated;
@@ -85,7 +90,7 @@ do `$`$ begin
 exception when insufficient_privilege then
   raise notice 'COMPANY_SUPERADMIN_OPERATOR_INSERT=blocked';
 end `$`$;
-select 'MEMBERSHIP_MODULE_GRANT_EFFECTIVE='||(select entitled from api.list_my_entitlements('$tenantA') where entitlement_kind='module' and entitlement_key='hse');
+select 'TENANT_A_HSE_MODULE_ENTITLEMENT='||(select entitled from api.list_my_entitlements('$tenantA') where entitlement_kind='module' and entitlement_key='hse');
 select 'TENANT_B_SELECT='||(select count(*) from core.tenants where id='$tenantB');
 select 'SITE_B_SELECT='||(select count(*) from core.sites where id='$siteB');
 select 'SITE_VIEW_B_SELECT='||(select count(*) from api.v_sites where id='$siteB');
@@ -110,10 +115,25 @@ do `$`$ begin
 exception when insufficient_privilege then
   raise notice 'CROSS_TENANT_SITE_DELETE=blocked';
 end `$`$;
-insert into iam.memberships(tenant_id,user_id,member_role,status,email)
-values('$tenantA','$uninvitedUser','employee','active','$uninvitedEmail') returning 'DIRECT_MEMBERSHIP_INSERT='||status;
-with activated as (update iam.memberships set status='active' where tenant_id='$tenantA' and id='$invitedMembership' returning status)
-select 'DIRECT_INVITATION_BYPASS_ACTIVATION='||status from activated;
+do `$`$ begin
+  insert into iam.memberships(tenant_id,user_id,member_role,status,email)
+  values('$tenantA','$uninvitedUser','employee','active','$uninvitedEmail');
+  raise exception 'AUDIT_PROBE_UNEXPECTED_MEMBERSHIP_INSERT_SUCCEEDED';
+exception when insufficient_privilege then
+  raise notice 'DIRECT_MEMBERSHIP_INSERT=blocked';
+end `$`$;
+do `$`$ begin
+  update iam.memberships set status='active' where tenant_id='$tenantA' and id='$invitedMembership';
+  raise exception 'AUDIT_PROBE_UNEXPECTED_INVITATION_ACTIVATION_SUCCEEDED';
+exception when insufficient_privilege then
+  raise notice 'DIRECT_INVITATION_BYPASS_ACTIVATION=blocked';
+end `$`$;
+do `$`$ begin
+  update iam.memberships set email='forged@example.test' where tenant_id='$tenantB' and id='$superBMembership';
+  raise exception 'AUDIT_PROBE_UNEXPECTED_CROSS_TENANT_MEMBERSHIP_UPDATE_SUCCEEDED';
+exception when insufficient_privilege then
+  raise notice 'CROSS_TENANT_MEMBERSHIP_UPDATE=blocked';
+end `$`$;
 set local request.jwt.claim.sub='$uninvitedUser';
 select 'UNINVITED_USER_TENANT_ACCESS='||(select count(*) from core.tenants where id='$tenantA');
 reset role;
@@ -141,13 +161,13 @@ foreach ($expected in @(
   'CROSS_TENANT_SITE_DELETE=blocked',
   'COMPANY_SUPERADMIN_SUBOWNER_RPC=blocked',
   'COMPANY_SUPERADMIN_OPERATOR_INSERT=blocked',
-  'MEMBERSHIP_MODULE_GRANT_ACCEPTED=true',
-  'MEMBERSHIP_MODULE_GRANT_EFFECTIVE=false',
-  'DIRECT_MEMBERSHIP_INSERT=active',
-  'DIRECT_INVITATION_BYPASS_ACTIVATION=active',
-  'UNINVITED_USER_TENANT_ACCESS=1'
+  'MEMBERSHIP_MODULE_GRANT=blocked',
+  'DIRECT_MEMBERSHIP_INSERT=blocked',
+  'DIRECT_INVITATION_BYPASS_ACTIVATION=blocked',
+  'CROSS_TENANT_MEMBERSHIP_UPDATE=blocked',
+  'UNINVITED_USER_TENANT_ACCESS=0'
 )) {
   if ($outputText -notmatch [regex]::Escape($expected)) { throw "Expected probe evidence missing: $expected. Output: $outputText" }
 }
 
-Write-Output 'PASS: authenticated Company Superadmin cannot cross-read Company B sites, HSE child records, evidence metadata, storage objects, or the invoker view; it cannot cross-update, insert, or delete a site. CONFIRMED GAPS: a member-scoped HSE module grant is accepted but ineffective; direct membership insert/invitation activation bypasses verified acceptance and gives the target tenant access.'
+Write-Output 'PASS: authenticated Company Superadmin cannot cross-read Company B sites, HSE child records, evidence metadata, storage objects, or invoker views; cannot cross-update/insert/delete sites or update cross-tenant membership; direct membership insert/activation is denied; member-scoped module grants are rejected; uninvited identity has no tenant access.'

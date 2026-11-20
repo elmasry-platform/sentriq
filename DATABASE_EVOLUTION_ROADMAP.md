@@ -12,7 +12,7 @@
 
 ## Phase 0 — Close existing security and verification findings
 
-**Entry evidence:** The latest recorded independent review flags F-01 as a Medium blocker and records F-02/F-03 and P-01 through P-05. No remediation is performed by this documentation branch.
+**Entry evidence:** The independent review recorded F-01 as a Medium blocker and recorded F-02/F-03 and P-01 through P-05. The follow-up status below is from `codex/foundation-security-remediation`; original evidence and finding history remain in `SECURITY_REVIEW.md` and `VERIFICATION_MATRIX.md`.
 
 1. **Close F-01 membership activation bypass.**
    - Revoke authenticated direct membership INSERT and constrain management updates to safe fields.
@@ -41,7 +41,9 @@
 8. **Resolve scheduled subscription lifecycle (P-04).**
    - Decide whether future starts are supported; ensure not-yet-started subscriptions do not block the live slot unless intended.
 
-**Exit gate:** Security review confirms F-01 is no longer reachable through table/API paths; entitlement scope behavior is explicit; operator MFA and actor provenance are verified; local tests are repeatable; CI protects policies, ACLs and RLS. This is a gate before onboarding real company users, not a claim that it has been met.
+**Follow-up status:** F-01, F-02, F-03, and P-05 have forward-only database remediation and pass local acceptance checks on `codex/foundation-security-remediation`. P-01 actor provenance, P-03 MFA/step-up, and P-04 subscription scheduling remain open integration/product items. P-02's bootstrap ACL boundary is documented and unchanged; P-05's hosted migration-owner check remains open.
+
+**Exit gate:** Security review confirms F-01 is not reachable through table/API paths; entitlement scope behavior is explicit; operator MFA and actor provenance are verified; local tests are repeatable; and CI protects policies, ACLs and RLS. The database findings are addressed locally, but the application, hosted Auth, and production gates remain open. This is a gate before onboarding real company users, not a production-readiness claim.
 
 ## Phase 1 — Stabilize the shared platform foundation
 
@@ -63,7 +65,7 @@
 7. Establish audit actor, data-minimization and retention rules. Audit table changes and business workflow histories as separate concerns.
 8. Profile supported HSE/core query paths before adding indexes. Decide usage/audit retention and partitioning from volume requirements.
 
-**Migration ordering:** finalize policy/authorization contract -> introduce/validate trusted request adapter -> close F-01/F-02 -> add only approved typed configuration/verification lifecycle -> run policy parity and API tests. Do not move live identities or change Auth provider as a side effect of these changes.
+**Migration ordering:** finalize policy/authorization contract -> close F-01/F-02 in the database foundation -> introduce/validate trusted request adapter -> add only approved typed configuration/verification lifecycle -> run policy parity and API tests. Do not move live identities or change Auth provider as a side effect of these changes.
 
 ## Phase 2 — Complete the first HSE product slice
 

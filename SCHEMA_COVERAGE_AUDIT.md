@@ -6,7 +6,7 @@ SENTRIQ has a meaningful shared-platform and HSE database foundation, but it is 
 
 The current HSE model is a credible first vertical slice for configurable inspection forms, inspections, fixed-stage review, findings, corrective actions, follow-ups, and evidence metadata. It is not a complete HSE management suite: incidents, hazard/risk registers, control measures, permits, HSE training, compliance obligations, emergency drills, contractor safety, and schedules are not represented as complete operational domains.
 
-The strongest architecture direction is already present: platform operators are separate from tenant memberships; functional roles do not represent management authority; module and feature access are separate; membership/site/org/task scopes intersect; and composite tenant foreign keys protect many important relationships. The main blockers are the verified membership-activation bypass (F-01), unverified trusted-server actor provenance, lack of an MFA/AAL database or application enforcement contract, and lack of end-to-end UI/API integration. No claim of full ERP readiness is supported by this repository.
+The strongest architecture direction is already present: platform operators are separate from tenant memberships; functional roles do not represent management authority; module and feature access are separate; membership/site/org/task scopes intersect; and composite tenant foreign keys protect many important relationships. At the audit baseline, blockers included the membership-activation bypass (F-01). The follow-up branch now addresses F-01, F-02, F-03, and P-05 locally. Trusted-server actor provenance, MFA/AAL enforcement, and end-to-end UI/API integration remain open. No claim of full ERP readiness is supported by this repository.
 
 ## Audit baseline and method
 
@@ -18,6 +18,10 @@ The strongest architecture direction is already present: platform operators are 
 - The current table count was recalculated by counting unique application CREATE TABLE declarations across the migration chain. It is not copied from the older review's table-count statement.
 - Prior local catalog evidence is attributed to SECURITY_REVIEW.md and IMPLEMENTATION_REPORT.md. This documentation task did not rerun migrations, connect to a hosted database, or execute tests.
 - Constraints, policies, function bodies, triggers, indexes, views, grants, JSONB usage, and storage policies were inspected in migration source. The existing review documents local PostgreSQL catalog counts and prior negative probes. Those prior results are evidence about that recorded run; they are not represented as tests performed during this audit.
+
+### Follow-up security remediation status
+
+The architecture findings below describe the verified audit baseline at `31368375fa4c4fcafd9f5a6d2078b2dc79ced854`; their evidence is retained as history. The follow-up branch `codex/foundation-security-remediation` adds forward migration `202611200002_foundation_security_remediation.sql`. F-01 direct membership writes and activation are closed locally; F-02 module grants are tenant-scoped and member-specific feature grants remain behind their parent module; F-03 exact fixture cleanup works on success and injected failure; P-05 default function ACLs and catalog allowlists are enforced. See `REMEDIATION_RESULTS.md` and `SECURITY_REVIEW.md` for test evidence and remaining hosted/backend gates.
 
 ### Migration chain
 
@@ -554,4 +558,4 @@ Evidence target links are validated by a trigger to inspection/finding/action/fo
 
 ## Audit scope boundary
 
-This branch adds architecture and domain documentation only. It does not change migrations, policies, functions, grants, tests, application code, Supabase configuration, hosted databases, or production systems. No schema redesign or ERP implementation is being proposed as completed work.
+At audit baseline commit `31368375fa4c4fcafd9f5a6d2078b2dc79ced854`, the `codex/schema-coverage-audit` branch added architecture and domain documentation only; that audit commit did not change migrations, policies, functions, grants, tests, application code, Supabase configuration, hosted databases, or production systems. The follow-up branch and its database changes are documented above and in `REMEDIATION_RESULTS.md`. No schema redesign or ERP implementation is being proposed as completed work.

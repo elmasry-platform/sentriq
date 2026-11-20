@@ -21,7 +21,7 @@ The implementation does not include the deployed Auth configuration, Laravel mid
 | Migration effort | Smallest path. `auth.users` foreign keys and `auth.uid()`/`auth.role()` remain compatible. | Large migration. Replace identity FKs, claims, policies, actor derivation, invitation acceptance, tests, and bootstrap workflow; plan identity-ID mapping and a coordinated cutover. |
 | Migration compatibility | Direct fit for all four current migrations and current tests. | Requires forward migrations or a deliberate schema redesign before implementation; changing only Laravel auth would not make these database policies portable. |
 | Multi-tenant isolation | RLS can continue to use the verified Auth subject with tenant membership rows. | RLS still works only if Laravel establishes an unforgeable-from-client transaction context. The internal identity model must own status and tenant bindings. |
-| Invitations | Existing RPC checks token hash, one-use row lock, expiry/revocation, and verified matching `auth.users.email`. F-01 must be closed to make that the only activation path. | Laravel can own invitation email and token flow but must preserve hash storage, one-use semantics, mailbox proof, atomic acceptance, and the active-user FK transaction. |
+| Invitations | Existing RPC checks token hash, one-use row lock, expiry/revocation, and verified matching `auth.users.email`. The follow-up migration closes the F-01 direct-table bypass; backend actor provenance remains unverified. | Laravel can own invitation email and token flow but must preserve hash storage, one-use semantics, mailbox proof, atomic acceptance, and the active-user FK transaction. |
 | MFA and platform operators | Supabase Auth supports MFA; configuration and app policy must require step-up for platform operator actions. Current SQL does not check an AAL claim. | Laravel can select an MFA/session provider, but SENTRIQ owns enrollment, recovery, step-up, enforcement, and high-assurance operator account recovery. |
 | Future Operations module | Shared identity lets HSE and Operations reuse one membership and Auth subject. | Shared internal IAM can be module-agnostic, but all future modules must migrate to and consistently use the new identity. |
 | Vendor dependency | Supabase Auth remains an identity vendor dependency; Auth user IDs and JWT semantics are embedded in the schema. | Reduces Supabase Auth dependency if SENTRIQ owns identity, but still depends on PostgreSQL/Supabase for the database and storage unless those are also migrated. |
@@ -35,7 +35,7 @@ This choice matches current migrations and avoids an identity migration before H
 
 ## Required safeguards before production
 
-- Require verified email for invitation acceptance; close F-01 so table writes cannot bypass that flow.
+- Require verified email for invitation acceptance; the follow-up database migration closes F-01 table-write bypasses. Laravel must still validate the Auth token and bind `service_role` actor/user UUIDs to that identity before production.
 - Require MFA/step-up for Owner and Subowner accounts and for high-impact platform functions. Test denial for a token without the required AAL.
 - Keep access and refresh tokens out of logs. Store refresh tokens in a protected server-side session or use a deliberately reviewed client flow.
 - Define access-token lifetime, refresh rotation, inactivity/absolute session limits, global sign-out, account suspension, Auth-user deletion, lost-factor recovery, and operator break-glass procedure.

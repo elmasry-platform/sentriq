@@ -324,7 +324,7 @@ The entity sketches are dependency placeholders only. They do not decide HR/pers
 ## Transition from current schema
 
 - Retain core.tenants, org_units, sites, Auth-backed memberships, current functional-role tables, commercial ledgers, HSE forms/inspections/actions and audit records as the foundation.
-- Close membership activation bypass and settle F-02 module grant behavior before application onboarding.
+- Database follow-up `codex/foundation-security-remediation` closes the membership activation bypass and settles F-02 module scope. Before application onboarding, bind service-role actor UUIDs to verified Auth identity in Laravel and confirm hosted migration-owner/data preflight obligations.
 - Add only the approved extension entities: likely typed company settings/domain proof, but do not add generic workflow/tasks/documents until requirements justify them.
 - Keep form title/definition/version snapshots and inspection answers in JSONB while adding schema validation at publish and submit boundaries.
 - Add first-class HSE incident, hazard, risk/control and inspection schedule lifecycle after business decisions. Preserve old finding/action records and map forward with additive migrations; do not destructively reinterpret them.

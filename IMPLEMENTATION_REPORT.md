@@ -59,3 +59,7 @@ The first GitHub run [44635637902](https://github.com/elmasry-platform/sentriq/a
 ## Merge readiness
 
 **PASS for review/merge of the database implementation.** Both workflow jobs passed on the corrected implementation commit; no merge, deployment, or hosted database change was performed. Production readiness remains out of scope until the documented trusted-server, UI, operations, and provider integrations are implemented and reviewed.
+
+## Foundation security remediation follow-up
+
+The prior implementation results above describe the earlier changeset and are preserved as historical evidence. On `codex/foundation-security-remediation`, forward migration `202611200002_foundation_security_remediation.sql` closes F-01 and F-02, P-05 defaults/catalog checks are added, and F-03 cleanup is deterministic on success and injected failure. The expanded 242-assertion pgTAP suite passed three times after a fresh reset; the repeat sequence, actual-role security probes, catalog checks, failure cleanup check, and database lint all passed locally. Current SHA, CI run, PR link, and remaining integration gates are in `REMEDIATION_RESULTS.md`.

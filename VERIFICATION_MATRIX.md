@@ -82,3 +82,22 @@ The command runs as local postgres for catalog visibility; it is inspection evid
 - Storage HTTP upload/download and signed-URL lifetime/revocation.
 - Every possible HSE table write and invalid composite-key tuple; the exact cross-tenant reads probe covers representative child records, not every statement.
 - Future Operations module policy parity.
+
+## Foundation remediation follow-up
+
+The matrix above preserves the historical security-review baseline. The following evidence is from `codex/foundation-security-remediation`, based on the audit commit `31368375fa4c4fcafd9f5a6d2078b2dc79ced854`; see `REMEDIATION_RESULTS.md` for the complete record and current CI link.
+
+| Check | Actual role / command | Result |
+|---|---|---|
+| F-01 direct membership insert, invited/suspended activation, identity/role/email/profile changes, and cross-tenant update | `SET ROLE authenticated`; Company Superadmin context | PASS — table privileges and policies deny the writes. Company Admin and Employee management attempts also fail. `anon` direct insert/update attempts fail under actual `SET ROLE anon`. |
+| F-01 service lifecycle RPC | `SET ROLE service_role` with service-role JWT claim | PASS — Company Superadmin can suspend/end an eligible lower-level member; Company Admin/Employee actors, cross-tenant targets, self-suspension, Company Superadmin targets, and activation requests are denied. Valid verified invitation acceptance still succeeds; wrong/unverified/expired/reused cases fail. |
+| F-02 module and feature grant contract | `SET ROLE authenticated` for platform grant RPC; `postgres` for direct constraint assertion | PASS — company module grant accepted; membership-scoped module grant denied by RPC and table constraint; member feature grant accepted but parent module is required and the grant does not leak to another membership. |
+| P-05 SECURITY DEFINER catalog/defaults | `postgres` catalog verification and temporary function creation; ACL checks for `anon`, `authenticated`, and `service_role` | PASS — exact authenticated and six-function service allowlists; owner=`postgres`; empty fixed `search_path`; explicit ACLs; no PUBLIC/anon execution; temporary api/private functions not executable by Supabase roles. |
+| pgTAP suite | Actual SQL roles `anon`, `authenticated`, and `service_role`; `postgres` only for fixtures | PASS — 242/242 on all three runs after the fresh reset. A test-only transaction grants service-role SELECT for result inspection and rolls it back. |
+| Security probes | `scripts/security_review_probes.ps1`; attacks run under actual `SET ROLE authenticated` | PASS — direct membership activation blocked, uninvited user sees zero tenant rows, cross-tenant reads/writes remain denied, membership-scoped module grant rejected. |
+| Concurrency run 1 | `scripts/test_database_concurrency.ps1`; worker SQL sessions use actual `SET ROLE service_role` | PASS — quota/idempotency, eight invoice retries, and one-winner invitation acceptance; exact fixture and associated audit cleanup found zero rows. |
+| Failure cleanup | `scripts/verify_database_concurrency_failure_cleanup.ps1` | PASS — injected failure after fixture setup exited nonzero; `finally` cleanup verification found zero fixture and audit rows. |
+| Concurrency run 2 and repeat pgTAP | Same harness followed by `npx supabase test db --local` without reset | PASS — cleanup found zero rows; pgTAP 242/242. |
+| Static contract and database lint | `scripts/check_database_contract.ps1`; `npx supabase db lint --local --fail-on error` | PASS — migration/test/workflow contract and assertion count synchronized; no schema errors. |
+
+Local validation used only the disposable local Supabase stack. Hosted JWT validation, Laravel actor provenance, MFA/AAL policy, hosted PostgREST/Storage behavior, hosted migration-owner confirmation, and production data preflight remain unverified integration gates.
