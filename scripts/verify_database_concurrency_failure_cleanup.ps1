@@ -14,3 +14,4 @@ if ($outputText -notmatch 'cleanup verification found zero synthetic rows') {
 }
 
 Write-Output 'PASS: intentional post-setup failure returned nonzero after finally cleanup verified zero synthetic fixture and audit rows.'
+$global:LASTEXITCODE = 0
