@@ -1,6 +1,6 @@
 create extension if not exists pgtap with schema extensions;
 begin;
-select extensions.plan(18);
+select extensions.plan(21);
 
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at) values
  ('00000000-0000-0000-0000-000000000101','authenticated','authenticated','phase1-owner@example.test','',now(),'{}','{}',now(),now()),
@@ -60,10 +60,14 @@ select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000102'
 set local role authenticated;
 select extensions.is((select count(*)::integer from hse.person_engagements),0,'suspended tenant denies Phase 1 engagement access');
 reset role;
+update core.tenants set status='active' where id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaa101';
 
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000103',true);
 set local role authenticated;
 select extensions.is((select count(*)::integer from hse.people),0,'Platform Subowner has no implicit company People access');
+select extensions.is((select count(*)::integer from core.sites where tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaa101'),0,'Platform Subowner has no implicit Phase 1 Site access');
+select extensions.is((select count(*)::integer from core.org_units where tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaa101'),0,'Platform Subowner has no implicit Phase 1 org-unit access');
+select extensions.throws_ok($$insert into core.sites(tenant_id,name,code) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaa101','Forbidden site','FORBID')$$,'42501',null,'Platform Subowner cannot create a company Site without company membership');
 reset role;
 select extensions.throws_ok($$update core.org_units set parent_id='20000000-0000-0000-0000-00000000a101' where id='20000000-0000-0000-0000-00000000a101'$$,'23514',null,'organizational hierarchy rejects self cycles');
 
