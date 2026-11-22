@@ -8,6 +8,7 @@ $tenantB = [guid]::NewGuid().ToString('D')
 $superA = [guid]::NewGuid().ToString('D')
 $superB = [guid]::NewGuid().ToString('D')
 $platformOwner = [guid]::NewGuid().ToString('D')
+$platformSubowner = [guid]::NewGuid().ToString('D')
 $uninvitedUser = [guid]::NewGuid().ToString('D')
 $invitedUser = [guid]::NewGuid().ToString('D')
 $superAMembership = [guid]::NewGuid().ToString('D')
@@ -36,11 +37,14 @@ values('$superB','authenticated','authenticated','super-b-$([guid]::NewGuid().To
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 values('$platformOwner','authenticated','authenticated','platform-owner-$([guid]::NewGuid().ToString('N'))@example.test','',now(),'{}','{}',now(),now());
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
+values('$platformSubowner','authenticated','authenticated','platform-subowner-$([guid]::NewGuid().ToString('N'))@example.test','',now(),'{}','{}',now(),now());
+insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 values('$uninvitedUser','authenticated','authenticated','$uninvitedEmail','',now(),'{}','{}',now(),now());
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 values('$invitedUser','authenticated','authenticated','$invitedEmail','',now(),'{}','{}',now(),now());
 insert into core.tenants(id,name,created_by) values('$tenantA','Audit Tenant A','$superA'),('$tenantB','Audit Tenant B','$superB');
 insert into iam.platform_operators(user_id,operator_role) values('$platformOwner','owner');
+insert into iam.platform_operators(user_id,operator_role,created_by) values('$platformSubowner','subowner','$platformOwner');
 insert into iam.memberships(id,tenant_id,user_id,member_role,status,email)
 values('$superAMembership','$tenantA','$superA','company_superadmin','active','super-a@example.test'),
       ('$superBMembership','$tenantB','$superB','company_superadmin','active','super-b@example.test');
@@ -74,6 +78,23 @@ do `$`$ begin
   raise exception 'AUDIT_PROBE_UNEXPECTED_MEMBER_MODULE_GRANT_SUCCEEDED';
 exception when sqlstate '22023' then
   raise notice 'MEMBERSHIP_MODULE_GRANT=blocked';
+end `$`$;
+select 'PLATFORM_OWNER_CAN_MANAGE_TENANT='||private.can_manage_tenant('$tenantA');
+do `$`$ begin
+  insert into iam.roles(tenant_id,role_key,label,role_family,created_by) values('$tenantA','operator-role-forbidden','Forbidden','admin','$platformOwner');
+  raise exception 'AUDIT_PROBE_UNEXPECTED_PLATFORM_ROLE_WRITE_SUCCEEDED';
+exception when insufficient_privilege then
+  raise notice 'PLATFORM_OWNER_ROLE_WRITE=blocked';
+end `$`$;
+reset role;
+set local request.jwt.claim.sub='$platformSubowner';
+set local role authenticated;
+select 'PLATFORM_SUBOWNER_CAN_MANAGE_TENANT='||private.can_manage_tenant('$tenantA');
+do `$`$ begin
+  insert into iam.roles(tenant_id,role_key,label,role_family,created_by) values('$tenantA','subowner-role-forbidden','Forbidden','admin','$platformSubowner');
+  raise exception 'AUDIT_PROBE_UNEXPECTED_SUBOWNER_ROLE_WRITE_SUCCEEDED';
+exception when insufficient_privilege then
+  raise notice 'PLATFORM_SUBOWNER_ROLE_WRITE=blocked';
 end `$`$;
 reset role;
 set local request.jwt.claim.sub='$superA';
@@ -162,6 +183,10 @@ foreach ($expected in @(
   'COMPANY_SUPERADMIN_SUBOWNER_RPC=blocked',
   'COMPANY_SUPERADMIN_OPERATOR_INSERT=blocked',
   'MEMBERSHIP_MODULE_GRANT=blocked',
+  'PLATFORM_OWNER_CAN_MANAGE_TENANT=false',
+  'PLATFORM_OWNER_ROLE_WRITE=blocked',
+  'PLATFORM_SUBOWNER_CAN_MANAGE_TENANT=false',
+  'PLATFORM_SUBOWNER_ROLE_WRITE=blocked',
   'DIRECT_MEMBERSHIP_INSERT=blocked',
   'DIRECT_INVITATION_BYPASS_ACTIVATION=blocked',
   'CROSS_TENANT_MEMBERSHIP_UPDATE=blocked',
@@ -170,4 +195,4 @@ foreach ($expected in @(
   if ($outputText -notmatch [regex]::Escape($expected)) { throw "Expected probe evidence missing: $expected. Output: $outputText" }
 }
 
-Write-Output 'PASS: authenticated Company Superadmin cannot cross-read Company B sites, HSE child records, evidence metadata, storage objects, or invoker views; cannot cross-update/insert/delete sites or update cross-tenant membership; direct membership insert/activation is denied; member-scoped module grants are rejected; uninvited identity has no tenant access.'
+Write-Output 'PASS: Platform Owner/Subowner cannot manage tenant roles; authenticated Company Superadmin cannot cross-read Company B sites, HSE child records, evidence metadata, storage objects, or invoker views; cannot cross-update/insert/delete sites or update cross-tenant membership; direct membership insert/activation is denied; member-scoped module grants are rejected; uninvited identity has no tenant access.'

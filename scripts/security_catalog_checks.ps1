@@ -33,7 +33,10 @@ declare
     'private.can_review_hse(uuid, uuid, uuid, boolean)',
     'private.current_membership_id(uuid)',
     'private.is_platform_operator()',
-    'private.is_platform_owner()'
+    'private.is_platform_owner()',
+    'private.people_scope_allowed(uuid, uuid, uuid, uuid)',
+    'private.phase1_membership(uuid)',
+    'private.phase1_permission_allowed(uuid, text, uuid, uuid, boolean, text, uuid)'
   ];
   v_expected_service text[] := array[
     'api.accept_invitation(text, uuid)',
@@ -41,7 +44,10 @@ declare
     'api.create_invoice_draft(uuid, text, character, timestamp with time zone, timestamp with time zone)',
     'api.invoice_usage_event(uuid, uuid, text)',
     'api.record_feature_usage(uuid, uuid, text, text, numeric, text, jsonb)',
-    'api.set_membership_status(uuid, uuid, text, uuid, text)'
+    'api.set_membership_status(uuid, uuid, text, uuid, text)',
+    'private.people_scope_allowed(uuid, uuid, uuid, uuid)',
+    'private.phase1_membership(uuid)',
+    'private.phase1_permission_allowed(uuid, text, uuid, uuid, boolean, text, uuid)'
   ];
   v_observed_authenticated text[];
   v_observed_service text[];

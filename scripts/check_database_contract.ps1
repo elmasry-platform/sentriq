@@ -6,6 +6,8 @@ $forwardMigrations = @($migrations | Where-Object { $_.Name -ne '202611190001_se
 $forwardSql = (($forwardMigrations | ForEach-Object { Get-Content -Raw $_.FullName }) -join "`n").ToLowerInvariant()
 $remediationMigration = Join-Path $root 'supabase/migrations/202611200002_foundation_security_remediation.sql'
 $remediationSql = (Get-Content -Raw $remediationMigration).ToLowerInvariant()
+$phase1SecurityMigration = Join-Path $root 'supabase/migrations/202611230001_phase1_permission_and_tenant_guards.sql'
+$phase1SecuritySql = (Get-Content -Raw $phase1SecurityMigration).ToLowerInvariant()
 $required = @(
   'core.features', 'core.plans', 'core.plan_entitlements', 'core.subscriptions',
   'core.subscription_items', 'core.entitlement_grants', 'core.usage_events', 'core.invoices',
@@ -60,7 +62,23 @@ if ($missingRemediation.Count -gt 0) { throw "Missing remediation migration mark
 if ($remediationSql -match 'create\s+table\s+if\s+not\s+exists|hse\.(incidents|risks|permits)') {
   throw 'The remediation migration contains hidden schema creation or future HSE domains.'
 }
-if ($migrations[-1].Name -ne '202611200002_foundation_security_remediation.sql') {
+$phase1SecurityRequired = @(
+  'create or replace function private.can_manage_tenant',
+  'm.member_role=''company_superadmin''',
+  'tenant_id_is_immutable',
+  'join iam.role_versions rv',
+  'new.role_version_id is null',
+  'roles_phase1_family_not_null_check',
+  'specific_override',
+  'o.scope_kind=d.scope_kind',
+  'd.scope_kind=''tenant'' and o.scope_kind in (''site'',''org_unit'',''assigned_task'')'
+)
+$missingPhase1Security = @($phase1SecurityRequired | Where-Object { $phase1SecuritySql -notmatch [regex]::Escape($_) })
+if ($missingPhase1Security.Count -gt 0) { throw "Missing Phase 1 security remediation markers: $($missingPhase1Security -join ', ')" }
+if ($phase1SecuritySql -match '(?is)union\s+all\s+select\s+rp\.scope_kind.*?mr\.role_version_id\s+is\s+null') {
+  throw 'A Phase 1 permission evaluator retains the unversioned role fallback.'
+}
+if ($migrations[-1].Name -ne '202611230001_phase1_permission_and_tenant_guards.sql') {
   throw 'The forward remediation migration is not the latest migration timestamp.'
 }
 $concurrencyHarness = Join-Path $root 'scripts/test_database_concurrency.ps1'
@@ -95,10 +113,15 @@ foreach ($marker in $sequence) {
   if ($index -lt 0) { throw "Database CI repeatability sequence is missing or out of order at: $marker" }
   $lastIndex = $index
 }
-$test = Get-Content -Raw (Join-Path $root 'supabase/tests/database/entitlements_rbac.test.sql')
-$planMatch = [regex]::Match($test, 'extensions\.plan\((\d+)\)')
-$assertionCount = [regex]::Matches($test, 'extensions\.(ok|is|throws_ok|lives_ok|throws_like|cmp_ok|results_eq|set_eq)\(').Count
-if (-not $planMatch.Success -or [int]$planMatch.Groups[1].Value -ne $assertionCount) {
-  throw "pgTAP plan/count mismatch: plan=$($planMatch.Groups[1].Value), assertions=$assertionCount"
+$testFiles = @(Get-ChildItem (Join-Path $root 'supabase/tests/database') -Filter '*.test.sql' | Sort-Object Name)
+$totalAssertions = 0
+foreach ($testFile in $testFiles) {
+  $test = Get-Content -Raw $testFile.FullName
+  $planMatches = [regex]::Matches($test, 'extensions\.plan\((\d+)\)')
+  $assertions = [regex]::Matches($test, 'extensions\.(ok|is|throws_ok|lives_ok|throws_like|cmp_ok|results_eq|set_eq)\(').Count
+  if ($planMatches.Count -ne 1 -or [int]$planMatches[0].Groups[1].Value -ne $assertions) {
+    throw "pgTAP plan/count mismatch in $($testFile.Name): plan=$($planMatches[0].Groups[1].Value), assertions=$assertions"
+  }
+  $totalAssertions += $assertions
 }
-Write-Output "PASS: $($required.Count) base and $($remediationRequired.Count) remediation markers, F-01/F-02 forward migration, F-03 exact cleanup harness, P-05 catalog checks, ordered CI repeatability sequence, and $assertionCount synchronized pgTAP assertions."
+Write-Output "PASS: $($required.Count) base, $($remediationRequired.Count) foundation remediation, $($phase1SecurityRequired.Count) Phase 1 security markers, F-01/F-02 forward migration, F-03 exact cleanup harness, P-05 catalog checks, ordered CI repeatability sequence, and $totalAssertions synchronized assertions across $($testFiles.Count) pgTAP files."
