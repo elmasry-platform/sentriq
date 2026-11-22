@@ -31,7 +31,8 @@ begin
  ) x(schema_name,table_name)
  loop
    execute format('drop trigger if exists phase1_tenant_id_immutable on %I.%I',r.schema_name,r.table_name);
-   execute format('create trigger phase1_tenant_id_immutable before update of tenant_id on %I.%I for each row execute function private.guard_tenant_id_immutable()',r.schema_name,r.table_name);
+   execute format('drop trigger if exists a_phase1_tenant_id_immutable on %I.%I',r.schema_name,r.table_name);
+   execute format('create trigger a_phase1_tenant_id_immutable before update of tenant_id on %I.%I for each row execute function private.guard_tenant_id_immutable()',r.schema_name,r.table_name);
  end loop;
 end $$;
 
@@ -133,7 +134,7 @@ begin
  if v_role.tenant_id is not null and (v_role.role_family is null or v_role.role_family not in ('admin','employee')) then
    raise exception 'functional role family requires owner classification' using errcode='23514';
  end if;
- if v_role.tenant_id is not null and v_role.role_family<>case when v_membership.member_role='employee' then 'employee' else 'admin' end then
+ if v_role.tenant_id is not null and v_role.role_family<>(case when v_membership.member_role='employee' then 'employee' else 'admin' end) then
    raise exception 'functional role family does not match membership family' using errcode='23514';
  end if;
  if v_role.tenant_id is not null then
