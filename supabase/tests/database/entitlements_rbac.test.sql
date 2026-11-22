@@ -57,13 +57,13 @@ insert into iam.site_access(tenant_id,membership_id,site_id,granted_by) values
  ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000002','30000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000001'),
  ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000003','30000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000001'),
  ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','10000000-0000-0000-0000-000000000004','30000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000001');
-insert into iam.roles(tenant_id,role_key,label,created_by) values
- ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','copilot_user','Copilot User','00000000-0000-0000-0000-000000000001'),
- ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','task_reader','Task Reader','00000000-0000-0000-0000-000000000001'),
- ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','org_reader','Org Unit Reader','00000000-0000-0000-0000-000000000001'),
- ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','site_reader','Site Reader','00000000-0000-0000-0000-000000000001'),
- ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','tenant_reader','Tenant Reader','00000000-0000-0000-0000-000000000001'),
- ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','foreign_role','Foreign Role','00000000-0000-0000-0000-000000000001');
+insert into iam.roles(tenant_id,role_key,label,role_family,created_by) values
+ ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','copilot_user','Copilot User','employee','00000000-0000-0000-0000-000000000001'),
+ ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','task_reader','Task Reader','employee','00000000-0000-0000-0000-000000000001'),
+ ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','org_reader','Org Unit Reader','employee','00000000-0000-0000-0000-000000000001'),
+ ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','site_reader','Site Reader','employee','00000000-0000-0000-0000-000000000001'),
+ ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','tenant_reader','Tenant Reader','employee','00000000-0000-0000-0000-000000000001'),
+ ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','foreign_role','Foreign Role','employee','00000000-0000-0000-0000-000000000001');
 insert into iam.role_permissions(role_id,permission_key,scope_kind,can_read,can_write)
 select r.id,p.permission_key,p.scope_kind,p.can_read,p.can_write from iam.roles r join (values
  ('copilot_user','hse.copilot.use','tenant',true,false),
@@ -73,21 +73,31 @@ select r.id,p.permission_key,p.scope_kind,p.can_read,p.can_write from iam.roles 
  on r.role_key=p.role_key and r.tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 insert into iam.role_permissions(role_id,permission_key,scope_kind,can_read,can_write)
 select id,'hse.inspections.read','org_unit',true,false from iam.roles where tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and role_key='org_reader';
+insert into iam.role_versions(tenant_id,role_id,version_no,role_family,status,created_by,published_at)
+select tenant_id,id,1,role_family,'published','00000000-0000-0000-0000-000000000001',now()
+ from iam.roles where tenant_id is not null;
+insert into iam.role_version_permissions(role_version_id,permission_key,scope_kind,can_read,can_write)
+select rv.id,rp.permission_key,rp.scope_kind,rp.can_read,rp.can_write
+ from iam.role_versions rv join iam.role_permissions rp on rp.role_id=rv.role_id;
 insert into iam.membership_roles(tenant_id,membership_id,role_id,granted_by)
 select 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000002',id,'00000000-0000-0000-0000-000000000001'
  from iam.roles where role_key in ('inspector','auditor') and tenant_id is null;
-insert into iam.membership_roles(tenant_id,membership_id,role_id,granted_by)
-select 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000002',id,'00000000-0000-0000-0000-000000000001'
- from iam.roles where role_key='copilot_user' and tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-insert into iam.membership_roles(tenant_id,membership_id,role_id,granted_by)
-select 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000003',id,'00000000-0000-0000-0000-000000000001'
- from iam.roles where role_key='copilot_user' and tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-insert into iam.membership_roles(tenant_id,membership_id,role_id,granted_by)
-select 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000005',id,'00000000-0000-0000-0000-000000000001'
- from iam.roles where role_key in ('task_reader','org_reader') and tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-insert into iam.membership_roles(tenant_id,membership_id,role_id,granted_by)
-select 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000005',id,'00000000-0000-0000-0000-000000000001'
- from iam.roles where role_key in ('site_reader','tenant_reader') and tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+insert into iam.membership_roles(tenant_id,membership_id,role_id,role_version_id,granted_by)
+select r.tenant_id,'10000000-0000-0000-0000-000000000002',r.id,rv.id,'00000000-0000-0000-0000-000000000001'
+ from iam.roles r join iam.role_versions rv on rv.tenant_id=r.tenant_id and rv.role_id=r.id and rv.version_no=1
+ where r.role_key='copilot_user' and r.tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+insert into iam.membership_roles(tenant_id,membership_id,role_id,role_version_id,granted_by)
+select r.tenant_id,'10000000-0000-0000-0000-000000000003',r.id,rv.id,'00000000-0000-0000-0000-000000000001'
+ from iam.roles r join iam.role_versions rv on rv.tenant_id=r.tenant_id and rv.role_id=r.id and rv.version_no=1
+ where r.role_key='copilot_user' and r.tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+insert into iam.membership_roles(tenant_id,membership_id,role_id,role_version_id,granted_by)
+select r.tenant_id,'10000000-0000-0000-0000-000000000005',r.id,rv.id,'00000000-0000-0000-0000-000000000001'
+ from iam.roles r join iam.role_versions rv on rv.tenant_id=r.tenant_id and rv.role_id=r.id and rv.version_no=1
+ where r.role_key in ('task_reader','org_reader') and r.tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+insert into iam.membership_roles(tenant_id,membership_id,role_id,role_version_id,granted_by)
+select r.tenant_id,'10000000-0000-0000-0000-000000000005',r.id,rv.id,'00000000-0000-0000-0000-000000000001'
+ from iam.roles r join iam.role_versions rv on rv.tenant_id=r.tenant_id and rv.role_id=r.id and rv.version_no=1
+ where r.role_key in ('site_reader','tenant_reader') and r.tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 insert into iam.membership_role_sites(tenant_id,membership_role_id,site_id,granted_by)
 select mr.tenant_id,mr.id,'30000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000001'
  from iam.membership_roles mr join iam.roles r on r.id=mr.role_id
@@ -218,7 +228,7 @@ select extensions.ok(not api.can_use_feature('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000003',true);
 select extensions.is((select count(*)::integer from iam.membership_roles where membership_id='10000000-0000-0000-0000-000000000002' and revoked_at is null and (ends_at is null or now()<ends_at)),3,'one membership can hold multiple active functional roles');
 select extensions.is((select member_role from iam.memberships where id='10000000-0000-0000-0000-000000000002'),'employee'::text,'functional roles do not change management level');
-select extensions.throws_ok($$insert into iam.membership_roles(tenant_id,membership_id,role_id,granted_by) select tenant_id,membership_id,role_id,granted_by from iam.membership_roles where membership_id='10000000-0000-0000-0000-000000000002' limit 1$$,'23505',null,'duplicate active role assignment is rejected');
+select extensions.throws_ok($$insert into iam.membership_roles(tenant_id,membership_id,role_id,role_version_id,granted_by) select tenant_id,membership_id,role_id,role_version_id,granted_by from iam.membership_roles where membership_id='10000000-0000-0000-0000-000000000002' limit 1$$,'23505',null,'duplicate active role assignment is rejected');
 select extensions.throws_ok($$insert into iam.membership_roles(tenant_id,membership_id,role_id,granted_by) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000002',(select id from iam.roles where role_key='foreign_role'),'00000000-0000-0000-0000-000000000001')$$,'23503',null,'cross-tenant role assignment is rejected');
 select extensions.ok(exists(select 1 from audit.events where action_key='iam.membership_roles.insert' and jsonb_typeof(summary->'changed_fields')='object' and summary->'changed_fields'<>'{}'::jsonb),'audit event captures safe before/after field details');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000003',true);
@@ -371,7 +381,7 @@ select extensions.is((select count(*)::integer from core.payments),0,'Employee c
 select extensions.throws_ok($$insert into iam.memberships(tenant_id,user_id,member_role,status,email) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','00000000-0000-0000-0000-000000000008','employee','active','unverified@example.test')$$,'42501',null,'Employee cannot provision another membership');
 select extensions.throws_ok($$insert into iam.site_access(tenant_id,membership_id,site_id,granted_by) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000003','30000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000003')$$,'42501',null,'Employee cannot expand its own site scope');
 reset role;
-select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true);
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000002',true);
 insert into hse.form_templates(id,tenant_id,title,category,status,revision,definition,owner_membership_id,created_by)
  values('40000000-0000-0000-0000-000000000001','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','{"en":"Test","ar":"اختبار"}','test','published',1,'{}','10000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000001');
 insert into hse.form_versions(id,tenant_id,template_id,version,snapshot,published_by)
@@ -385,8 +395,9 @@ select extensions.throws_ok($$insert into iam.task_assignments(tenant_id,members
 insert into iam.site_access(tenant_id,membership_id,site_id,granted_by) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000008','30000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000001');
 insert into iam.org_unit_access(tenant_id,membership_id,org_unit_id,granted_by) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000008','20000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000001');
 insert into iam.member_permissions(tenant_id,membership_id,permission_key,scope_kind,site_id,can_read,granted_by) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000008','hse.findings.read','site','30000000-0000-0000-0000-000000000001',true,'00000000-0000-0000-0000-000000000001');
-insert into iam.membership_roles(tenant_id,membership_id,role_id,granted_by)
- select 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000008',r.id,'00000000-0000-0000-0000-000000000001' from iam.roles r
+insert into iam.membership_roles(tenant_id,membership_id,role_id,role_version_id,granted_by)
+ select r.tenant_id,'10000000-0000-0000-0000-000000000008',r.id,rv.id,'00000000-0000-0000-0000-000000000001'
+ from iam.roles r join iam.role_versions rv on rv.tenant_id=r.tenant_id and rv.role_id=r.id and rv.version_no=1
  where r.tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and r.role_key in ('site_reader','org_reader','task_reader');
 insert into iam.membership_role_sites(tenant_id,membership_role_id,site_id,granted_by)
  select mr.tenant_id,mr.id,'30000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000001' from iam.membership_roles mr join iam.roles r on r.id=mr.role_id
@@ -480,9 +491,9 @@ select extensions.is((select current_stage from hse.inspections where id='600000
 select extensions.lives_ok($$insert into hse.inspection_reviews(tenant_id,inspection_id,stage,decision,actor_membership_id,actor_user_id,reason,revision) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','60000000-0000-0000-0000-000000000002','reviewer_1','returned','10000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000004','Synthetic return reason',1)$$,'first reviewer can return an initially submitted inspection');
 select extensions.is((select status from hse.inspections where id='60000000-0000-0000-0000-000000000002'),'returned'::text,'review return is applied');
 reset role;
-select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true);
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000002',true);
 set local role authenticated;
-select extensions.throws_ok($$insert into hse.inspection_reviews(tenant_id,inspection_id,stage,decision,actor_membership_id,actor_user_id,revision) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','60000000-0000-0000-0000-000000000001','reviewer_2','approved',null,'00000000-0000-0000-0000-000000000001',1)$$,'40001',null,'stale review revision is rejected');
+select extensions.throws_ok($$insert into hse.inspection_reviews(tenant_id,inspection_id,stage,decision,actor_membership_id,actor_user_id,revision) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','60000000-0000-0000-0000-000000000001','reviewer_2','approved','10000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002',1)$$,'40001',null,'stale review revision is rejected');
 reset role;
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000006',true);
 set local role authenticated;

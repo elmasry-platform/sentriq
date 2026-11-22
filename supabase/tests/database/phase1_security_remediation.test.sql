@@ -23,11 +23,14 @@ insert into core.tenant_entitlements(tenant_id,module_key,status,changed_by) val
 insert into core.entitlement_grants(tenant_id,module_key,starts_at,expires_at,granted_by,reason,billing_treatment,source_kind,legacy_entitlement_id)
 select tenant_id,module_key,created_at,'infinity'::timestamptz,changed_by,'Phase 1 remediation test','complimentary','legacy_backfill',id
 from core.tenant_entitlements where tenant_id in ('cccccccc-cccc-cccc-cccc-ccccccccca01','dddddddd-dddd-dddd-dddd-dddddddddb01');
+select set_config('request.jwt.claim.role','authenticated',true);
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000104',true);
 insert into core.org_units(id,tenant_id,name) values
  ('20000000-0000-0000-0000-00000000c101','cccccccc-cccc-cccc-cccc-ccccccccca01','Remediation A Unit'),
  ('20000000-0000-0000-0000-00000000d101','dddddddd-dddd-dddd-dddd-dddddddddb01','Remediation B Unit');
 insert into core.sites(id,tenant_id,org_unit_id,name,code) values
  ('30000000-0000-0000-0000-00000000c101','cccccccc-cccc-cccc-cccc-ccccccccca01','20000000-0000-0000-0000-00000000c101','Remediation A Site','RA01'),
+ ('30000000-0000-0000-0000-00000000c102','cccccccc-cccc-cccc-cccc-ccccccccca01','20000000-0000-0000-0000-00000000c101','Remediation A Other Site','RA02'),
  ('30000000-0000-0000-0000-00000000d101','dddddddd-dddd-dddd-dddd-dddddddddb01','20000000-0000-0000-0000-00000000d101','Remediation B Site','RB01');
 insert into hse.people(id,tenant_id,display_name,person_kind,created_by) values
  ('40000000-0000-0000-0000-00000000c101','cccccccc-cccc-cccc-cccc-ccccccccca01','Remediation Person','employee','00000000-0000-0000-0000-000000000104');
@@ -65,14 +68,20 @@ select extensions.throws_ok($$update hse.contractor_organizations set tenant_id=
 select extensions.throws_ok($$update hse.person_engagements set tenant_id='dddddddd-dddd-dddd-dddd-dddddddddb01' where id='50000000-0000-0000-0000-00000000c101'$$,'23514',null,'engagement tenant ownership is immutable');
 select extensions.throws_ok($$update core.sites set tenant_id='dddddddd-dddd-dddd-dddd-dddddddddb01' where id='30000000-0000-0000-0000-00000000c101'$$,'23514',null,'Site tenant ownership is immutable');
 select extensions.throws_ok($$update core.org_units set tenant_id='dddddddd-dddd-dddd-dddd-dddddddddb01' where id='20000000-0000-0000-0000-00000000c101'$$,'23514',null,'organizational unit tenant ownership is immutable');
-select extensions.ok(not private.phase1_permission_allowed('cccccccc-cccc-cccc-cccc-ccccccccca01','view_all',null,null,false),'legacy permission rows do not authorize an unversioned assignment');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000105',true);
+select extensions.is(private.phase1_permission_allowed('cccccccc-cccc-cccc-cccc-ccccccccca01','view_all',null,null,false),false,'legacy permission rows do not authorize an unversioned assignment');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000104',true);
+reset role;
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,granted_by,reason)
- values('cccccccc-cccc-cccc-cccc-ccccccccca01','10000000-0000-0000-0000-00000000c104','view_all','deny','tenant',auth.uid(),'Override binding test deny');
+ values('cccccccc-cccc-cccc-cccc-ccccccccca01','10000000-0000-0000-0000-00000000c104','view_all','deny','tenant','00000000-0000-0000-0000-000000000104','Override binding test deny');
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,site_id,can_read,exception_kind,granted_by,reason)
- values('cccccccc-cccc-cccc-cccc-ccccccccca01','10000000-0000-0000-0000-00000000c104','view_all','allow','site','30000000-0000-0000-0000-00000000d101',true,'specific_override',auth.uid(),'Unrelated override scope');
+ values('cccccccc-cccc-cccc-cccc-ccccccccca01','10000000-0000-0000-0000-00000000c104','view_all','allow','site','30000000-0000-0000-0000-00000000c102',true,'specific_override','00000000-0000-0000-0000-000000000104','Unrelated override scope');
+set local role authenticated;
 select extensions.ok(not private.phase1_permission_allowed('cccccccc-cccc-cccc-cccc-ccccccccca01','view_all','30000000-0000-0000-0000-00000000c101','20000000-0000-0000-0000-00000000c101',false),'unrelated-site override cannot bypass a tenant deny');
+reset role;
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,site_id,can_read,exception_kind,granted_by,reason)
- values('cccccccc-cccc-cccc-cccc-ccccccccca01','10000000-0000-0000-0000-00000000c104','view_all','allow','site','30000000-0000-0000-0000-00000000c101',true,'specific_override',auth.uid(),'Exact narrower site override');
+ values('cccccccc-cccc-cccc-cccc-ccccccccca01','10000000-0000-0000-0000-00000000c104','view_all','allow','site','30000000-0000-0000-0000-00000000c101',true,'specific_override','00000000-0000-0000-0000-000000000104','Exact narrower site override');
+set local role authenticated;
 select extensions.ok(private.phase1_permission_allowed('cccccccc-cccc-cccc-cccc-ccccccccca01','view_all','30000000-0000-0000-0000-00000000c101','20000000-0000-0000-0000-00000000c101',false),'specific override can narrow a tenant deny to its exact site');
 reset role;
 select * from extensions.finish();
