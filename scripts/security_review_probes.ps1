@@ -17,6 +17,7 @@ $superBMembership = [guid]::NewGuid().ToString('D')
 $siteA = [guid]::NewGuid().ToString('D')
 $siteB = [guid]::NewGuid().ToString('D')
 $templateB = [guid]::NewGuid().ToString('D')
+$templateA = [guid]::NewGuid().ToString('D')
 $versionB = [guid]::NewGuid().ToString('D')
 $inspectionB = [guid]::NewGuid().ToString('D')
 $findingB = [guid]::NewGuid().ToString('D')
@@ -48,10 +49,19 @@ insert into iam.platform_operators(user_id,operator_role,created_by) values('$pl
 insert into iam.memberships(id,tenant_id,user_id,member_role,status,email)
 values('$superAMembership','$tenantA','$superA','company_superadmin','active','super-a@example.test'),
       ('$superBMembership','$tenantB','$superB','company_superadmin','active','super-b@example.test');
+insert into core.entitlement_grants(tenant_id,module_key,starts_at,expires_at,granted_by,reason,billing_treatment,source_kind)
+values('$tenantA','hse',now()-interval '1 minute','infinity'::timestamptz,'$platformOwner','HSE authorization boundary probe','complimentary','platform'),
+      ('$tenantB','hse',now()-interval '1 minute','infinity'::timestamptz,'$platformOwner','HSE authorization boundary probe','complimentary','platform');
+insert into iam.roles(tenant_id,role_key,label,role_family,created_by)
+values('$tenantB','operator_visibility_probe','Operator visibility probe','employee','$superB');
+insert into iam.role_permissions(role_id,permission_key,scope_kind,can_read)
+select id,'hse.inspections.read','tenant',true from iam.roles where tenant_id='$tenantB' and role_key='operator_visibility_probe';
 insert into iam.memberships(id,tenant_id,user_id,member_role,status,email)
 values('$invitedMembership','$tenantA','$invitedUser','employee','invited','$invitedEmail');
 insert into core.sites(id,tenant_id,name,code) values('$siteA','$tenantA','Site A','AUD-A'),('$siteB','$tenantB','Site B','AUD-B');
 set local request.jwt.claim.sub='$superB';
+insert into hse.form_templates(id,tenant_id,title,category,owner_membership_id,created_by)
+values('$templateA','$tenantA','{"en":"Tenant A audit probe"}'::jsonb,'audit_probe','$superAMembership','$superA');
 insert into hse.form_templates(id,tenant_id,title,category,owner_membership_id,created_by)
 values('$templateB','$tenantB','{"en":"Audit form"}'::jsonb,'audit','$superBMembership','$superB');
 insert into hse.form_versions(id,tenant_id,template_id,version,snapshot,published_by)
@@ -70,6 +80,8 @@ insert into hse.evidence_files(id,tenant_id,site_id,linked_record_type,linked_re
 values('$evidenceB','$tenantB','$siteB','finding','$findingB','$evidenceKeyB','audit-evidence.txt','text/plain',12,'$superB','confirmed');
 insert into storage.objects(bucket_id,name,metadata)
 values('sentriq-hse-evidence','$evidenceKeyB','{"mimetype":"text/plain"}'::jsonb);
+insert into audit.events(tenant_id,actor_user_id,action_key,record_type,summary)
+values('$tenantA','$superA','audit.probe','hse.form_templates','{}'::jsonb);
 
 set local request.jwt.claim.sub='$platformOwner';
 set local role authenticated;
@@ -80,6 +92,13 @@ exception when sqlstate '22023' then
   raise notice 'MEMBERSHIP_MODULE_GRANT=blocked';
 end `$`$;
 select 'PLATFORM_OWNER_CAN_MANAGE_TENANT='||private.can_manage_tenant('$tenantA');
+select 'PLATFORM_HSE_HELPER='||private.can_access_hse('$tenantA','hse.forms.read',null,false,null,null);
+select 'PLATFORM_HSE_FORM_ROWS='||(select count(*) from hse.form_templates where tenant_id='$tenantA');
+select 'PLATFORM_HSE_AUDIT_ROWS='||(select count(*) from audit.events where tenant_id='$tenantA');
+select 'PLATFORM_MEMBERSHIP_ROWS='||(select count(*) from iam.memberships where tenant_id='$tenantB');
+select 'PLATFORM_ROLE_ROWS='||(select count(*) from iam.roles where tenant_id='$tenantB');
+select 'PLATFORM_ROLE_PERMISSION_ROWS='||(select count(*) from iam.role_permissions rp join iam.roles r on r.id=rp.role_id where r.tenant_id='$tenantB');
+select 'PLATFORM_STORAGE_ROWS='||(select count(*) from storage.objects where bucket_id='sentriq-hse-evidence' and name='$evidenceKeyB');
 do `$`$ begin
   insert into iam.roles(tenant_id,role_key,label,role_family,created_by) values('$tenantA','operator-role-forbidden','Forbidden','admin','$platformOwner');
   raise exception 'AUDIT_PROBE_UNEXPECTED_PLATFORM_ROLE_WRITE_SUCCEEDED';
@@ -99,6 +118,13 @@ end `$`$;
 reset role;
 set local request.jwt.claim.sub='$superA';
 set local role authenticated;
+select 'TENANT_A_FORM_ROWS='||(select count(*) from hse.form_templates where id='$templateA');
+reset role;
+insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,granted_by,reason)
+values('$tenantA','$superAMembership','hse.forms.read','deny','tenant','$superA','Phase 1 deny precedence probe');
+set local request.jwt.claim.sub='$superA';
+set local role authenticated;
+select 'TENANT_A_FORM_ROWS_AFTER_DENY='||(select count(*) from hse.form_templates where id='$templateA');
 do `$`$ begin
   perform api.manage_subowner('$invitedUser',true);
   raise exception 'AUDIT_PROBE_UNEXPECTED_COMPANY_SUBOWNER_MANAGEMENT_SUCCEEDED';
@@ -185,14 +211,23 @@ foreach ($expected in @(
   'MEMBERSHIP_MODULE_GRANT=blocked',
   'PLATFORM_OWNER_CAN_MANAGE_TENANT=false',
   'PLATFORM_OWNER_ROLE_WRITE=blocked',
+  'PLATFORM_HSE_HELPER=false',
+  'PLATFORM_HSE_FORM_ROWS=0',
+  'PLATFORM_HSE_AUDIT_ROWS=0',
+  'PLATFORM_MEMBERSHIP_ROWS=0',
+  'PLATFORM_ROLE_ROWS=0',
+  'PLATFORM_ROLE_PERMISSION_ROWS=0',
+  'PLATFORM_STORAGE_ROWS=0',
   'PLATFORM_SUBOWNER_CAN_MANAGE_TENANT=false',
   'PLATFORM_SUBOWNER_ROLE_WRITE=blocked',
   'DIRECT_MEMBERSHIP_INSERT=blocked',
   'DIRECT_INVITATION_BYPASS_ACTIVATION=blocked',
   'CROSS_TENANT_MEMBERSHIP_UPDATE=blocked',
+  'TENANT_A_FORM_ROWS=1',
+  'TENANT_A_FORM_ROWS_AFTER_DENY=0',
   'UNINVITED_USER_TENANT_ACCESS=0'
 )) {
   if ($outputText -notmatch [regex]::Escape($expected)) { throw "Expected probe evidence missing: $expected. Output: $outputText" }
 }
 
-Write-Output 'PASS: Platform Owner/Subowner cannot manage tenant roles; authenticated Company Superadmin cannot cross-read Company B sites, HSE child records, evidence metadata, storage objects, or invoker views; cannot cross-update/insert/delete sites or update cross-tenant membership; direct membership insert/activation is denied; member-scoped module grants are rejected; uninvited identity has no tenant access.'
+Write-Output 'PASS: Platform Owner/Subowner cannot access legacy company HSE, membership, role, audit, or Storage records; Company Superadmin can access company-enabled HSE forms but an explicit deny wins; cross-tenant records and Storage remain isolated; direct membership insert/activation is denied; member-scoped module grants are rejected; uninvited identity has no tenant access.'

@@ -13,7 +13,11 @@ language sql security definer set search_path='' as 'select 1';
 do $$
 declare
   v_expected_authenticated text[] := array[
+    'api.assign_membership_role(uuid, uuid, uuid, uuid, uuid[], uuid[], timestamp with time zone, timestamp with time zone, text)',
     'api.can_use_feature(uuid, text, text, uuid)',
+    'api.create_company_invitation(uuid, text, text, interval)',
+    'api.create_company_superadmin_invitation(uuid, text, interval, jsonb, text)',
+    'api.create_delegation(uuid, uuid, text, uuid, uuid, text[], timestamp with time zone, timestamp with time zone, text)',
     'api.create_subscription(uuid, uuid, timestamp with time zone, timestamp with time zone, character, jsonb)',
     'api.create_tenant(text, text, uuid)',
     'api.issue_entitlement_grant(uuid, text, text, uuid, timestamp with time zone, timestamp with time zone, text, text, character, bigint, numeric)',
@@ -22,9 +26,14 @@ declare
     'api.publish_plan(text, integer, text, character, bigint, jsonb)',
     'api.revoke_entitlement_grant(uuid, text)',
     'api.revoke_invitation(uuid, text)',
+    'api.review_delegation(uuid, uuid, text, timestamp with time zone, text)',
+    'api.revoke_delegation(uuid, uuid, text)',
+    'api.set_default_permission_profile(uuid, text, text, jsonb, text, uuid[], text)',
     'api.set_entitlement_grant_status(uuid, text, text)',
     'api.set_feature_enabled(text, boolean)',
+    'api.set_member_permission_decision(uuid, uuid, text, text, text, uuid, uuid, text, uuid, boolean, boolean, timestamp with time zone, text, text)',
     'api.set_module_enabled(text, boolean)',
+    'api.set_superadmin_capability_limit(uuid, uuid, text, boolean, boolean, text)',
     'api.update_subscription_status(uuid, text)',
     'private.can_access_core(uuid, text, uuid, boolean)',
     'private.can_access_hse(uuid, text, uuid, boolean, text, uuid)',
@@ -56,6 +65,8 @@ declare
   v_postgres_oid oid := 'postgres'::regrole::oid;
   v_table_oid oid := 'iam.memberships'::regclass::oid;
 begin
+  v_expected_authenticated := array(select x from unnest(v_expected_authenticated) as a(x) order by x);
+  v_expected_service := array(select x from unnest(v_expected_service) as s(x) order by x);
   select coalesce(array_agg(s.signature order by s.signature),array[]::text[])
     into v_observed_authenticated
     from (

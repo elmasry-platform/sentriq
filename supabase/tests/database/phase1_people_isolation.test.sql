@@ -1,6 +1,6 @@
 create extension if not exists pgtap with schema extensions;
 begin;
-select extensions.plan(21);
+select extensions.plan(26);
 
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at) values
  ('00000000-0000-0000-0000-000000000101','authenticated','authenticated','phase1-owner@example.test','',now(),'{}','{}',now(),now()),
@@ -67,6 +67,11 @@ set local role authenticated;
 select extensions.is((select count(*)::integer from hse.people),0,'Platform Subowner has no implicit company People access');
 select extensions.is((select count(*)::integer from core.sites where tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaa101'),0,'Platform Subowner has no implicit Phase 1 Site access');
 select extensions.is((select count(*)::integer from core.org_units where tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaa101'),0,'Platform Subowner has no implicit Phase 1 org-unit access');
+select extensions.ok(not private.can_access_hse('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaa101','hse.forms.read',null,false,null,null),'Platform Subowner cannot use the legacy HSE helper even when the company has HSE access');
+select extensions.is((select count(*)::integer from iam.memberships where tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaa101'),0,'Platform Subowner cannot read company membership identities');
+select extensions.is((select count(*)::integer from iam.roles where tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaa101'),0,'Platform Subowner cannot read tenant functional roles');
+select extensions.is((select count(*)::integer from audit.events where tenant_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaa101'),0,'Platform Subowner cannot read company audit events');
+select extensions.ok(not private.can_access_core('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaa101','core.structure.manage','30000000-0000-0000-0000-00000000a101',true),'Platform Subowner cannot use the legacy core access helper');
 select extensions.throws_ok($$insert into core.sites(tenant_id,name,code) values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaa101','Forbidden site','FORBID')$$,'42501',null,'Platform Subowner cannot create a company Site without company membership');
 reset role;
 select extensions.throws_ok($$update core.org_units set parent_id='20000000-0000-0000-0000-00000000a101' where id='20000000-0000-0000-0000-00000000a101'$$,'23514',null,'organizational hierarchy rejects self cycles');
