@@ -1,7 +1,6 @@
 -- Company reactivation restores exactly what its suspension took down:
 -- envelopes and the decisions, action grants and profiles sourced from them.
--- Role assignment history is immutable, so sourced role assignments stay
--- revoked (fail-closed) and every skip is audited.
+-- Tenant-caused sourced role takedowns restore; independent revocation stays terminal.
 begin;
 select extensions.plan(48);
 
@@ -123,13 +122,13 @@ select extensions.is((select status from iam.delegation_envelopes where id=(sele
 select extensions.ok((select status='active' and not suspended_by_tenant from iam.member_permission_decisions where id=(select id from restore_envs where k='dec1')),'sourced decision returns with the envelope');
 select extensions.ok((select status='active' and not suspended_by_tenant from iam.permission_action_grants where tenant_id='71000000-0000-0000-0000-000000000001' and source_delegation_id=(select id from restore_envs where k='P')),'sourced action grant returns with the envelope');
 select extensions.ok((select is_current and not suspended_by_tenant from iam.membership_permission_profiles where tenant_id='71000000-0000-0000-0000-000000000001' and membership_id='72000000-0000-0000-0000-000000000003'),'sourced profile is current again with the envelope');
-select extensions.ok((select revoked_at is not null from iam.membership_roles where tenant_id='71000000-0000-0000-0000-000000000001' and membership_id='72000000-0000-0000-0000-000000000003'),'fail-closed: revoked role assignment history is immutable and stays revoked');
+select extensions.ok((select revoked_at is null and not suspended_by_tenant from iam.membership_roles where tenant_id='71000000-0000-0000-0000-000000000001' and membership_id='72000000-0000-0000-0000-000000000003'),'company-caused role assignment takedown is restored');
 select extensions.ok((select status='suspended' and not suspended_by_tenant from iam.member_permission_decisions where id=(select id from restore_envs where k='dec2')),'sourced decision whose window ended during the suspension is not restored');
 select extensions.ok((select not is_current and not suspended_by_tenant from iam.membership_permission_profiles where tenant_id='71000000-0000-0000-0000-000000000001' and membership_id='72000000-0000-0000-0000-000000000008' and source_delegation_id is not null),'conflicted sourced profile stays deactivated');
 select extensions.is((select count(*)::integer from audit.events where tenant_id='71000000-0000-0000-0000-000000000001' and action_key='iam.delegation.restored'),2,'one audit row per restored envelope');
 select extensions.is((select count(*)::integer from audit.events where tenant_id='71000000-0000-0000-0000-000000000001' and action_key='iam.delegation.restored' and summary->>'cause'='tenant_reactivation'),2,'restore audit rows name the cause');
-select extensions.is((select count(*)::integer from audit.events where tenant_id='71000000-0000-0000-0000-000000000001' and action_key='iam.delegation_source.restored'),3,'one audit row per restored sourced effect');
-select extensions.ok(exists(select 1 from audit.events where tenant_id='71000000-0000-0000-0000-000000000001' and action_key='iam.delegation_source.restore_skipped' and summary->>'reason'='role_assignment_history_immutable'),'skipped role assignment restore is audited');
+select extensions.is((select count(*)::integer from audit.events where tenant_id='71000000-0000-0000-0000-000000000001' and action_key='iam.delegation_source.restored'),4,'one audit row per restored sourced effect');
+select extensions.ok(exists(select 1 from audit.events where tenant_id='71000000-0000-0000-0000-000000000001' and action_key='iam.delegation_source.restored' and summary->>'restored'='role_assignment'),'restored role assignment is audited');
 select extensions.ok(exists(select 1 from audit.events where tenant_id='71000000-0000-0000-0000-000000000001' and action_key='iam.delegation_source.restore_skipped' and summary->>'reason'='validity_window_ended'),'expired sourced decision skip is audited');
 select extensions.ok(exists(select 1 from audit.events where tenant_id='71000000-0000-0000-0000-000000000001' and action_key='iam.delegation_source.restore_skipped' and summary->>'reason'='conflicting_current_profile'),'conflicted profile skip is audited');
 select extensions.ok(private.people_delegation_allows('71000000-0000-0000-0000-000000000001','72000000-0000-0000-0000-000000000002','role_assignment',null,null,null),'restored envelope is usable again');
