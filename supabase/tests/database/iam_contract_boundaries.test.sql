@@ -1,6 +1,6 @@
 -- Independent regression tests for the reviewed privilege boundaries.
 begin;
-select extensions.plan(51);
+select extensions.plan(60);
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at)
 select ('90000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','iam-contract-'||i||'@example.test',now(),now(),now()
 from generate_series(1,8) i;
@@ -102,6 +102,17 @@ select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002'
 select api.set_permission_action('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000004','operations.contract.read','approve','allow','tenant',null,null,null,null,now(),null,'Admin approval authority');
 select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000004',true);
 select extensions.lives_ok($$select api.assign_membership_role('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000007','94000000-0000-0000-0000-000000000001',(select id from iam.role_versions where role_id='94000000-0000-0000-0000-000000000001' and version_no=1),'{}'::uuid[],'{}'::uuid[],now(),null,'Valid approval role assignment')$$,'authorized delegated assignment succeeds');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
+select api.publish_role_version('91000000-0000-0000-0000-000000000001','94000000-0000-0000-0000-000000000001','[{"permission_key":"operations.contract.read","scope_kind":"tenant","can_read":false,"can_write":false,"actions":["approve"]}]'::jsonb,'Second immutable version');
+reset role;
+insert into iam.superadmin_capability_limits(tenant_id,membership_id,capability_key,can_use,can_delegate,set_by,reason)
+values('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000002','operations.contract.read',true,false,'90000000-0000-0000-0000-000000000003','Reviewer nondelegable authority');
+set local role authenticated;
+select extensions.throws_ok($$update iam.membership_roles set role_version_id=(select id from iam.role_versions where role_id='94000000-0000-0000-0000-000000000001' and version_no=2) where role_id='94000000-0000-0000-0000-000000000001'$$,'23514','role_assignment_identity_is_immutable','Superadmin cannot swap a validated role version through UPDATE');
+select extensions.throws_ok($$update iam.membership_roles set role_id=gen_random_uuid() where role_id='94000000-0000-0000-0000-000000000001'$$,'23514','role_assignment_identity_is_immutable','Superadmin cannot swap a validated role identity through UPDATE');
+reset role;
+delete from iam.superadmin_capability_limits where membership_id='92000000-0000-0000-0000-000000000002' and capability_key='operations.contract.read';
+set local role authenticated;
 select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000007',true);
 select extensions.ok(api.authorize('91000000-0000-0000-0000-000000000001','operations.contract.read','approve'),'beneficiary receives delegated role action');
 select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
@@ -123,9 +134,18 @@ select extensions.ok(exists(select 1 from iam.permission_profile_defaults where 
 select extensions.throws_ok($$insert into iam.permission_profile_permissions(tenant_id,profile_version_id,permission_key,scope_kind,can_read) select d.tenant_id,d.profile_version_id,'create_edit','tenant',true from iam.permission_profile_defaults d where tenant_id='91000000-0000-0000-0000-000000000001' and role_family='employee'$$,'42501',null,'published profile cannot be appended even by migration owner');
 set local role authenticated;
 select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
-select api.revoke_delegation('91000000-0000-0000-0000-000000000001',(select id from iam.delegation_envelopes where delegate_membership_id='92000000-0000-0000-0000-000000000004' and status='active'),'End delegated defaults');
+select api.create_delegation('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000004','tenant',null,null,array['role_assignment'],now(),now()+interval '1 hour','Second profile authority source');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000004',true);
+select extensions.throws_ok($$select * from api.set_default_permission_profile('91000000-0000-0000-0000-000000000001','employee','Ambiguous source','[{"permission_key":"view_all","scope_kind":"tenant","can_read":true,"can_write":false}]'::jsonb,'new_users_only','{}'::uuid[],'Must select exact source')$$,'42501','explicit_profile_source_required','multiple profile sources require explicit selection');
+select extensions.lives_ok($$select * from api.set_default_permission_profile('91000000-0000-0000-0000-000000000001','employee','Explicit source','[{"permission_key":"view_all","scope_kind":"tenant","can_read":true,"can_write":false}]'::jsonb,'new_users_only','{}'::uuid[],'Selected earlier source',(select id from iam.delegation_envelopes where delegate_membership_id='92000000-0000-0000-0000-000000000004' and status='active' and level='employees_default'))$$,'explicit profile source works despite newer concurrent source');
+reset role;
+select extensions.is((select d.level from iam.permission_profile_defaults p join iam.delegation_envelopes d on d.id=p.source_delegation_id where p.tenant_id='91000000-0000-0000-0000-000000000001' and p.role_family='employee'),'employees_default','default keeps chosen earlier source rather than latest');
+set local role authenticated;
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
+select api.revoke_delegation('91000000-0000-0000-0000-000000000001',(select id from iam.delegation_envelopes where delegate_membership_id='92000000-0000-0000-0000-000000000004' and status='active' and level='employees_default'),'End delegated defaults');
 reset role;
 select extensions.ok(not private.decision_source_valid((select source_delegation_id from iam.permission_profile_defaults where tenant_id='91000000-0000-0000-0000-000000000001' and role_family='employee'),'91000000-0000-0000-0000-000000000001'),'revoked default envelope cannot supply new invitation permissions');
+update iam.delegation_envelopes set status='revoked',revoked_at=now(),revoked_by='90000000-0000-0000-0000-000000000002',revoke_reason='Close extra source' where delegate_membership_id='92000000-0000-0000-0000-000000000004' and status='active';
 set local role authenticated;
 reset role;
 insert into core.org_units(id,tenant_id,name) values('95000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000001','Contract Unit');
@@ -133,6 +153,17 @@ insert into core.sites(id,tenant_id,org_unit_id,name,code) values('96000000-0000
 insert into iam.site_access(tenant_id,membership_id,site_id,granted_by) values('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005','96000000-0000-0000-0000-000000000001','90000000-0000-0000-0000-000000000002');
 insert into iam.org_unit_access(tenant_id,membership_id,org_unit_id,granted_by) values('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005','95000000-0000-0000-0000-000000000001','90000000-0000-0000-0000-000000000002');
 insert into core.sites(id,tenant_id,org_unit_id,name,code) values('96000000-0000-0000-0000-000000000002','91000000-0000-0000-0000-000000000001','95000000-0000-0000-0000-000000000001','Second contract site','CONTRACT2');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
+set local role authenticated;
+select api.set_permission_action('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005','operations.contract.read','export','allow','tenant',null,null,null,null,now(),null,'Existing export authority');
+select api.set_member_permission_decision('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005','operations.contract.read','deny','tenant',null,null,null,null,false,false,null,null,'Deny full permission');
+select api.set_member_permission_decision('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005','operations.contract.read','allow','site','96000000-0000-0000-0000-000000000001',null,null,null,true,false,null,'specific_override','Narrow approved exception');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000005',true);
+select extensions.ok(api.authorize('91000000-0000-0000-0000-000000000001','operations.contract.read','read','96000000-0000-0000-0000-000000000001','95000000-0000-0000-0000-000000000001'),'site override restores read under tenant deny');
+select extensions.ok(api.authorize('91000000-0000-0000-0000-000000000001','operations.contract.read','export','96000000-0000-0000-0000-000000000001','95000000-0000-0000-0000-000000000001'),'site override restores preexisting named action under tenant deny');
+select extensions.ok(not api.authorize('91000000-0000-0000-0000-000000000001','operations.contract.read','export'),'site override does not restore tenant-wide named action');
+select extensions.ok(not api.authorize('91000000-0000-0000-0000-000000000001','operations.contract.read','approve','96000000-0000-0000-0000-000000000001','95000000-0000-0000-0000-000000000001'),'site override does not override explicit site-independent action deny');
+reset role;
 insert into iam.org_unit_access(tenant_id,membership_id,org_unit_id,granted_by) values('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000004','95000000-0000-0000-0000-000000000001','90000000-0000-0000-0000-000000000002');
 insert into iam.site_access(tenant_id,membership_id,site_id,granted_by) select '91000000-0000-0000-0000-000000000001',m,x,'90000000-0000-0000-0000-000000000002' from unnest(array['92000000-0000-0000-0000-000000000004'::uuid,'92000000-0000-0000-0000-000000000007'::uuid]) m cross join unnest(array['96000000-0000-0000-0000-000000000001'::uuid,'96000000-0000-0000-0000-000000000002'::uuid]) x on conflict do nothing;
 select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);

@@ -40,6 +40,7 @@ declare
     'api.review_delegation(uuid, uuid, text, timestamp with time zone, text)',
     'api.revoke_delegation(uuid, uuid, text)',
     'api.set_default_permission_profile(uuid, text, text, jsonb, text, uuid[], text)',
+    'api.set_default_permission_profile(uuid, text, text, jsonb, text, uuid[], text, uuid)',
     'api.set_entitlement_grant_status(uuid, text, text)',
     'api.set_feature_enabled(text, boolean)',
     'api.set_member_permission_decision(uuid, uuid, text, text, text, uuid, uuid, text, uuid, boolean, boolean, timestamp with time zone, text, text)',

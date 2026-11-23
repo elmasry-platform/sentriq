@@ -23,7 +23,7 @@ Based on isolation branch e25e71e. All prior migrations stay unchanged. New migr
 
 ## Verification so far
 
-Local PostgreSQL 15.20 with pgTAP, real database roles and a minimal Auth/Storage SQL harness. All ordered migrations apply from empty application schemas. Five test files execute without SQL failures or not-ok output: 242 + 26 + 30 + 14 + 51 = 363 assertions. Three repeat runs and the exact SQL ACL catalog checks pass locally. The ACL locale mismatch was corrected with deterministic collation and set equality. CI then reached the final lint step. Shared trigger lint errors were corrected in migration018; the latest CI result still must be checked. Multi-site/org tests found and fixed a legacy scope guard reading mutable permissions instead of the assigned immutable version, in migration019.
+Local PostgreSQL 15.20 with pgTAP, real database roles and a minimal Auth/Storage SQL harness. All ordered migrations apply from empty application schemas. Five test files execute without SQL failures or not-ok output: 242 + 26 + 30 + 14 + 60 = 372 assertions. Three repeat runs and the exact SQL ACL catalog checks pass locally. The ACL locale mismatch was corrected with deterministic collation and set equality. CI then reached the final lint step. Shared trigger lint errors were corrected in migration018; the latest CI result still must be checked. Multi-site/org tests found and fixed a legacy scope guard reading mutable permissions instead of the assigned immutable version, in migration019.
 
 This harness is not a running Supabase Auth, PostgREST or Storage service. It does not prove HTTP routes, actual JWT verification, signed storage URLs, backend or frontend integration. GitHub CI and independent review remain required. No claim of full acceptance or production readiness is made.
 
@@ -53,3 +53,7 @@ Keep PostgreSQL constraints, composite references, transactions and RLS. Replace
 ## Recovera migration preflight
 
 Remote history uses original hosted timestamp versions unlike this repository. A separate staging directory preserves the 18 recorded remote migration statements and versions, adding only the new 20261125 migrations. No remote history repair is allowed. Dry-run for001..018 succeeded. Replaying that exact remote baseline locally plus001..018 passed all355 tests three times. Migration019 and updated363-test suite must be rerun against it before applying. A fresh dry-run and exact pending list are required after final review.
+
+## Independent review follow-up
+
+Migrations020..022 protect assignment identity on update, require explicit profile/default provenance (old API rejects ambiguous sources), and align specific-override precedence for named actions with legacy read. Regression tests include nondelegable Superadmin version swap, concurrent profile envelopes, and narrow action restoration. Latest review required again. Owner subsequently requested global platform read visibility, overriding the earlier no-operational-access rule. That change is not implemented yet. It does not imply new mutation authority.
