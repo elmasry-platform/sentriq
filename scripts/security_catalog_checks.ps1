@@ -76,9 +76,9 @@ declare
   v_postgres_oid oid := 'postgres'::regrole::oid;
   v_table_oid oid := 'iam.memberships'::regclass::oid;
 begin
-  v_expected_authenticated := array(select x from unnest(v_expected_authenticated) as a(x) order by x);
-  v_expected_service := array(select x from unnest(v_expected_service) as s(x) order by x);
-  select coalesce(array_agg(s.signature order by s.signature),array[]::text[])
+  v_expected_authenticated := array(select x from unnest(v_expected_authenticated) as a(x) order by x collate "C");
+  v_expected_service := array(select x from unnest(v_expected_service) as s(x) order by x collate "C");
+  select coalesce(array_agg(s.signature order by s.signature collate "C"),array[]::text[])
     into v_observed_authenticated
     from (
       select n.nspname||'.'||p.proname||'('||pg_catalog.oidvectortypes(p.proargtypes)||')' as signature
@@ -87,11 +87,11 @@ begin
        where n.nspname in ('api','private') and p.prosecdef
          and has_function_privilege('authenticated',p.oid,'EXECUTE')
     ) s;
-  if v_observed_authenticated<>v_expected_authenticated then
+  if not (v_observed_authenticated @> v_expected_authenticated and v_expected_authenticated @> v_observed_authenticated) then
     raise exception 'authenticated SECURITY DEFINER ACL mismatch; observed %, expected %',v_observed_authenticated,v_expected_authenticated;
   end if;
 
-  select coalesce(array_agg(s.signature order by s.signature),array[]::text[])
+  select coalesce(array_agg(s.signature order by s.signature collate "C"),array[]::text[])
     into v_observed_service
     from (
       select n.nspname||'.'||p.proname||'('||pg_catalog.oidvectortypes(p.proargtypes)||')' as signature
@@ -100,7 +100,7 @@ begin
        where n.nspname in ('api','private') and p.prosecdef
          and has_function_privilege('service_role',p.oid,'EXECUTE')
     ) s;
-  if v_observed_service<>v_expected_service then
+  if not (v_observed_service @> v_expected_service and v_expected_service @> v_observed_service) then
     raise exception 'service_role SECURITY DEFINER ACL mismatch; observed %, expected %',v_observed_service,v_expected_service;
   end if;
 
