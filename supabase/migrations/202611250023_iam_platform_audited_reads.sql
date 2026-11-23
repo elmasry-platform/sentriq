@@ -1,6 +1,9 @@
--- Owner decision: platform operators can read all company data, not mutate it.
+-- User approval: Telegram7487759 explicitly grants both Platform Owner and
+-- Sub-owner read visibility across all companies, with no extra operational writes.
 -- Every successful RPC read writes an audit event in the same transaction.
 -- Fixed columns avoid granting future secret columns automatically.
+-- before_values/after_values contain tenant record history and may include PII.
+-- This is part of approved company-data visibility, not access to auth secrets.
 begin;
 create or replace function api.platform_read_company(p_tenant_id uuid,p_resource text,p_limit integer default 50,p_offset integer default 0)
 returns jsonb language plpgsql security definer set search_path='' as $$

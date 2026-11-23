@@ -61,3 +61,7 @@ Migrations020..022 protect assignment identity on update, require explicit profi
 ## Backend boundary update
 
 The user rejected a Next.js backend layer and requested a separate backend service. Backend framework selection is pending, and no server code or further server design is part of this change.
+
+## Platform read privacy note
+
+The user explicitly approved all-company read visibility for both Platform Owner and Sub-owner (Telegram7487759). Historical engagement before_values/after_values JSON may include personal data. These fields are visible through the audited company read RPC, so platform operators can see that history. Auth credentials and invitation token hashes remain excluded. Every successful read RPC is audited. This is an application audit record, not an independently immutable external audit ledger.
