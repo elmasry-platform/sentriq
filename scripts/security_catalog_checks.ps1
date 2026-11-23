@@ -179,6 +179,10 @@ select 'PASS: SECURITY DEFINER ownership, empty search_path, explicit ACL allowl
 $captured = $sql | & docker exec -i $container psql -X -qAt -v ON_ERROR_STOP=1 -U postgres -d postgres 2>&1
 $exitCode = $LASTEXITCODE
 $output = $captured -join "`n"
-if ($exitCode -ne 0) { throw "Security catalog checks failed: $output" }
+if ($exitCode -ne 0) {
+  $safeError = $output.Replace([char]13, '').Replace([char]10, '%0A')
+  Write-Output "::error title=Security catalog SQL failure::$safeError"
+  throw "Security catalog checks failed: $output"
+}
 if ($output -notmatch 'PASS: SECURITY DEFINER ownership') { throw "Security catalog check success evidence was missing: $output" }
 Write-Output $output
