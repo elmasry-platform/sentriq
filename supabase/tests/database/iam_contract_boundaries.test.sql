@@ -1,6 +1,6 @@
 -- Independent regression tests for the reviewed privilege boundaries.
 begin;
-select extensions.plan(43);
+select extensions.plan(51);
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at)
 select ('90000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','iam-contract-'||i||'@example.test',now(),now(),now()
 from generate_series(1,8) i;
@@ -132,6 +132,43 @@ insert into core.org_units(id,tenant_id,name) values('95000000-0000-0000-0000-00
 insert into core.sites(id,tenant_id,org_unit_id,name,code) values('96000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000001','95000000-0000-0000-0000-000000000001','Contract Site','CONTRACT');
 insert into iam.site_access(tenant_id,membership_id,site_id,granted_by) values('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005','96000000-0000-0000-0000-000000000001','90000000-0000-0000-0000-000000000002');
 insert into iam.org_unit_access(tenant_id,membership_id,org_unit_id,granted_by) values('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005','95000000-0000-0000-0000-000000000001','90000000-0000-0000-0000-000000000002');
+insert into core.sites(id,tenant_id,org_unit_id,name,code) values('96000000-0000-0000-0000-000000000002','91000000-0000-0000-0000-000000000001','95000000-0000-0000-0000-000000000001','Second contract site','CONTRACT2');
+insert into iam.org_unit_access(tenant_id,membership_id,org_unit_id,granted_by) values('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000004','95000000-0000-0000-0000-000000000001','90000000-0000-0000-0000-000000000002');
+insert into iam.site_access(tenant_id,membership_id,site_id,granted_by) select '91000000-0000-0000-0000-000000000001',m,x,'90000000-0000-0000-0000-000000000002' from unnest(array['92000000-0000-0000-0000-000000000004'::uuid,'92000000-0000-0000-0000-000000000007'::uuid]) m cross join unnest(array['96000000-0000-0000-0000-000000000001'::uuid,'96000000-0000-0000-0000-000000000002'::uuid]) x on conflict do nothing;
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
+insert into iam.roles(id,tenant_id,role_key,label,role_family,created_by) values('94000000-0000-0000-0000-000000000002','91000000-0000-0000-0000-000000000001','contract_site','Contract scoped actions','employee','90000000-0000-0000-0000-000000000002');
+set local role authenticated;
+select api.publish_role_version('91000000-0000-0000-0000-000000000001','94000000-0000-0000-0000-000000000002','[{"permission_key":"operations.contract.read","scope_kind":"site","can_read":false,"can_write":false,"actions":["approve"]}]'::jsonb,'Scoped exact action role');
+select api.create_delegation('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000004','site','96000000-0000-0000-0000-000000000001',null,array['role_assignment'],now(),now()+interval '1 hour','Independent scoped source');
+select api.create_delegation('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000004','site','96000000-0000-0000-0000-000000000002',null,array['role_assignment'],now(),now()+interval '1 hour','Independent scoped source');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000004',true);
+select extensions.throws_ok($$select api.assign_membership_role('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000007','94000000-0000-0000-0000-000000000002',(select id from iam.role_versions where role_id='94000000-0000-0000-0000-000000000002' and version_no=1),array['96000000-0000-0000-0000-000000000001'::uuid,'96000000-0000-0000-0000-000000000002'::uuid],'{}'::uuid[],now(),null,'Scoped role assignment test')$$,'42501',null,'site sources cannot be combined beyond one envelope');
+select extensions.lives_ok($$select api.assign_membership_role('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000007','94000000-0000-0000-0000-000000000002',(select id from iam.role_versions where role_id='94000000-0000-0000-0000-000000000002' and version_no=1),array['96000000-0000-0000-0000-000000000001'::uuid],'{}'::uuid[],now(),null,'Scoped role assignment test')$$,'exact site assignment succeeds with concurrent sources');
+reset role;
+select extensions.is((select d.site_id::text from iam.membership_roles r join iam.delegation_envelopes d on d.id=r.source_delegation_id where r.role_id='94000000-0000-0000-0000-000000000002' and r.revoked_at is null),'96000000-0000-0000-0000-000000000001','site assignment captures the matching envelope, not the latest');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
+set local role authenticated;
+select api.revoke_delegation('91000000-0000-0000-0000-000000000001',(select source_delegation_id from iam.membership_roles where role_id='94000000-0000-0000-0000-000000000002' and revoked_at is null),'Revoke exact scoped source');
+reset role;
+select extensions.ok(exists(select 1 from iam.membership_roles where role_id='94000000-0000-0000-0000-000000000002' and revoked_at is not null),'site assignment is revoked with its precise source');
+insert into core.org_units(id,tenant_id,name) values('95000000-0000-0000-0000-000000000002','91000000-0000-0000-0000-000000000001','Second Contract Unit');
+insert into iam.org_unit_access(tenant_id,membership_id,org_unit_id,granted_by) select '91000000-0000-0000-0000-000000000001',m,x,'90000000-0000-0000-0000-000000000002' from unnest(array['92000000-0000-0000-0000-000000000004'::uuid,'92000000-0000-0000-0000-000000000007'::uuid]) m cross join unnest(array['95000000-0000-0000-0000-000000000001'::uuid,'95000000-0000-0000-0000-000000000002'::uuid]) x on conflict do nothing;
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
+insert into iam.roles(id,tenant_id,role_key,label,role_family,created_by) values('94000000-0000-0000-0000-000000000003','91000000-0000-0000-0000-000000000001','contract_org_unit','Contract scoped actions','employee','90000000-0000-0000-0000-000000000002');
+set local role authenticated;
+select api.publish_role_version('91000000-0000-0000-0000-000000000001','94000000-0000-0000-0000-000000000003','[{"permission_key":"operations.contract.read","scope_kind":"org_unit","can_read":false,"can_write":false,"actions":["approve"]}]'::jsonb,'Scoped exact action role');
+select api.create_delegation('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000004','org_unit',null,'95000000-0000-0000-0000-000000000001',array['role_assignment'],now(),now()+interval '1 hour','Independent scoped source');
+select api.create_delegation('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000004','org_unit',null,'95000000-0000-0000-0000-000000000002',array['role_assignment'],now(),now()+interval '1 hour','Independent scoped source');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000004',true);
+select extensions.throws_ok($$select api.assign_membership_role('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000007','94000000-0000-0000-0000-000000000003',(select id from iam.role_versions where role_id='94000000-0000-0000-0000-000000000003' and version_no=1),'{}'::uuid[],array['95000000-0000-0000-0000-000000000001'::uuid,'95000000-0000-0000-0000-000000000002'::uuid],now(),null,'Scoped role assignment test')$$,'42501',null,'org_unit sources cannot be combined beyond one envelope');
+select extensions.lives_ok($$select api.assign_membership_role('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000007','94000000-0000-0000-0000-000000000003',(select id from iam.role_versions where role_id='94000000-0000-0000-0000-000000000003' and version_no=1),'{}'::uuid[],array['95000000-0000-0000-0000-000000000001'::uuid],now(),null,'Scoped role assignment test')$$,'exact org_unit assignment succeeds with concurrent sources');
+reset role;
+select extensions.is((select d.org_unit_id::text from iam.membership_roles r join iam.delegation_envelopes d on d.id=r.source_delegation_id where r.role_id='94000000-0000-0000-0000-000000000003' and r.revoked_at is null),'95000000-0000-0000-0000-000000000001','org_unit assignment captures the matching envelope, not the latest');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
+set local role authenticated;
+select api.revoke_delegation('91000000-0000-0000-0000-000000000001',(select source_delegation_id from iam.membership_roles where role_id='94000000-0000-0000-0000-000000000003' and revoked_at is null),'Revoke exact scoped source');
+reset role;
+select extensions.ok(exists(select 1 from iam.membership_roles where role_id='94000000-0000-0000-0000-000000000003' and revoked_at is not null),'org_unit assignment is revoked with its precise source');
 select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
 insert into hse.people(id,tenant_id,display_name,person_kind,created_by) values('97000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000001','Assigned worker','employee','90000000-0000-0000-0000-000000000002');
 insert into hse.person_engagements(id,tenant_id,person_id,engagement_type,site_id,org_unit_id,created_by) values('98000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000001','97000000-0000-0000-0000-000000000001','employee','96000000-0000-0000-0000-000000000001','95000000-0000-0000-0000-000000000001','90000000-0000-0000-0000-000000000002');
