@@ -1,14 +1,18 @@
 -- Forward-only IAM contract repair. No deployment or business-data rebuild.
 begin;
 
--- Supabase integration is behind a replaceable identity boundary. A standalone
--- PostgreSQL backend must supply this function from verified, transaction-local
--- identity context, never from client-provided actor identifiers.
+-- Incremental identity adapter for new code only. Legacy routines still call
+-- auth.uid()/auth.role() directly. This is not a completed portable boundary.
+-- A standalone port must replace every dependency with verified, transaction-local
+-- identity context, never client-provided actor identifiers.
 create or replace function private.request_actor_id() returns uuid
 language sql stable set search_path='' as $$select auth.uid()$$;
 revoke all on function private.request_actor_id() from public,anon;
 grant execute on function private.request_actor_id() to authenticated,service_role;
 
+-- Intentional: target IAM contract Model A permits several active Company
+-- Superadmins. Do not replace this with a one-per-tenant unique index.
+-- Regression: iam_contract_boundaries.test.sql, two active Superadmins coexist.
 drop index if exists iam.one_active_company_superadmin;
 
 alter table iam.member_permission_decisions add column source_delegation_id uuid;

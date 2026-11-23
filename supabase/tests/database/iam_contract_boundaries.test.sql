@@ -1,6 +1,6 @@
 -- Independent regression tests for the reviewed privilege boundaries.
 begin;
-select extensions.plan(72);
+select extensions.plan(74);
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at)
 select ('90000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','iam-contract-'||i||'@example.test',now(),now(),now()
 from generate_series(1,8) i;
@@ -239,5 +239,7 @@ select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000008'
 select extensions.lives_ok($$select api.platform_set_membership_status('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000006','suspended','Platform enforcement action')$$,'platform may suspend exact company account');
 select extensions.lives_ok($$select api.platform_set_membership_status('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000006','active','Platform reactivation action')$$,'platform may reactivate exact company account');
 reset role;
+select extensions.ok(exists(select 1 from pg_indexes where schemaname='iam' and tablename='memberships' and indexdef like '%(user_id)%'),'membership lookup has a user_id-leading index');
+select extensions.ok(not exists(select 1 from pg_policies where schemaname in ('core','iam','hse','audit') and (coalesce(qual,'')||coalesce(with_check,'')) ~ '=[ ]*auth[.]uid[(][)]'),'policy identity comparisons use an initplan rather than a bare call');
 select * from extensions.finish();
 rollback;
