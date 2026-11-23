@@ -1,6 +1,6 @@
 -- Independent regression tests for the reviewed privilege boundaries.
 begin;
-select extensions.plan(74);
+select extensions.plan(87);
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at)
 select ('90000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','iam-contract-'||i||'@example.test',now(),now(),now()
 from generate_series(1,8) i;
@@ -109,6 +109,8 @@ insert into iam.superadmin_capability_limits(tenant_id,membership_id,capability_
 values('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000002','operations.contract.read',true,false,'90000000-0000-0000-0000-000000000003','Reviewer nondelegable authority');
 set local role authenticated;
 select extensions.throws_ok($$update iam.membership_roles set role_version_id=(select id from iam.role_versions where role_id='94000000-0000-0000-0000-000000000001' and version_no=2) where role_id='94000000-0000-0000-0000-000000000001'$$,'23514','role_assignment_identity_is_immutable','Superadmin cannot swap a validated role version through UPDATE');
+select extensions.throws_ok($$update iam.membership_roles set ends_at=now()+interval '1 year' where role_id='94000000-0000-0000-0000-000000000001'$$,'23514','role_assignment_identity_is_immutable','nondelegable Superadmin cannot extend an assignment lifetime');
+select extensions.ok(not api.authorize('91000000-0000-0000-0000-000000000001','operations.contract.read',null),'null action fails closed for Superadmin');
 select extensions.throws_ok($$update iam.membership_roles set role_id=gen_random_uuid() where role_id='94000000-0000-0000-0000-000000000001'$$,'23514','role_assignment_identity_is_immutable','Superadmin cannot swap a validated role identity through UPDATE');
 reset role;
 delete from iam.superadmin_capability_limits where membership_id='92000000-0000-0000-0000-000000000002' and capability_key='operations.contract.read';
@@ -224,10 +226,21 @@ select extensions.is(jsonb_array_length(api.platform_read_company('91000000-0000
 select extensions.throws_ok($$select api.platform_read_company('91000000-0000-0000-0000-000000000001','auth.users')$$,'22023','platform_read_resource_not_allowed','platform read cannot request auth credentials');
 select extensions.throws_ok($$select api.platform_read_company('91000000-0000-0000-0000-000000000001','hse.people;delete from core.tenants')$$,'22023','platform_read_resource_not_allowed','resource names are not SQL input');
 select extensions.throws_ok($$select api.platform_read_company('91000000-0000-0000-0000-000000000001','hse.people',101)$$,'22023','platform_read_page_invalid','platform read has bounded pagination');
+select extensions.is((select count(*)::integer from core.tenants),0,'platform cannot bypass audit by selecting tenants directly');
+select extensions.is((select count(*)::integer from iam.superadmin_capability_limits),0,'platform direct read of tenant limits is denied');
+select extensions.ok((api.platform_read_company('91000000-0000-0000-0000-000000000001','core.features')->>'audit_event_id')::bigint>0,'global catalog read is audited');
+select extensions.is(jsonb_array_length(api.platform_operator_roster()->'rows'),2,'platform roster read is available through audited RPC');
+select extensions.ok((api.platform_operator_roster()->>'audit_event_id')::bigint>0,'platform roster returns an audit event');
+select extensions.ok(not exists(select 1 from pg_policies where schemaname='iam' and tablename='invitations' and cmd in ('INSERT','UPDATE')),'stale invitation direct-write policies are removed');
+select extensions.lives_ok($$select api.review_delegation('91000000-0000-0000-0000-000000000001',(select (r->>'id')::uuid from jsonb_array_elements(api.platform_read_company('91000000-0000-0000-0000-000000000001','iam.delegation_envelopes')->'rows') r where r->>'status'='active' limit 1),'extend',now()+interval '2 hours','Shared platform delegation review')$$,'Subowner can extend another company delegation under shared platform authority');
+select extensions.lives_ok($$select api.platform_set_tenant_status('91000000-0000-0000-0000-000000000002','suspended','Shared platform lifecycle authority')$$,'Subowner retains company suspension authority through guarded RPC');
+select extensions.lives_ok($$select api.platform_set_tenant_status('91000000-0000-0000-0000-000000000002','active','Shared platform reactivation authority')$$,'Subowner retains company reactivation authority');
+select extensions.lives_ok($$select api.set_module_enabled('operations',false)$$,'Subowner retains global module disable authority');
+select api.set_module_enabled('operations',true);
 select extensions.throws_ok($$select api.manage_subowner('90000000-0000-0000-0000-000000000001',false)$$,'42501','subowner_management_not_allowed','Subowner cannot remove another operator');
 select extensions.throws_ok($$select api.manage_subowner('90000000-0000-0000-0000-000000000006',true)$$,'42501','subowner_management_not_allowed','Subowner cannot add another Subowner');
 reset role;
-select extensions.is((select count(*)::integer from audit.events where action_key='platform.company_data.read' and actor_user_id='90000000-0000-0000-0000-000000000008'),2,'every successful company read creates one audit event');
+select extensions.is((select count(*)::integer from audit.events where action_key='platform.company_data.read' and actor_user_id='90000000-0000-0000-0000-000000000008'),3,'every successful company read creates one audit event');
 select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000001',true);
 set local role authenticated;
 select extensions.is(jsonb_array_length(api.platform_read_company('91000000-0000-0000-0000-000000000001','hse.people')->'rows'),1,'Owner also reads company data without membership');
@@ -241,5 +254,6 @@ select extensions.lives_ok($$select api.platform_set_membership_status('91000000
 reset role;
 select extensions.ok(exists(select 1 from pg_indexes where schemaname='iam' and tablename='memberships' and indexdef like '%(user_id)%'),'membership lookup has a user_id-leading index');
 select extensions.ok(not exists(select 1 from pg_policies where schemaname in ('core','iam','hse','audit') and (coalesce(qual,'')||coalesce(with_check,'')) ~ '=[ ]*auth[.]uid[(][)]'),'policy identity comparisons use an initplan rather than a bare call');
+select extensions.ok(exists(select 1 from audit.events where action_key='platform.catalog.read' and tenant_id is null and scope_kind='platform' and record_type='core.features'),'global catalog audit is not attributed to company data');
 select * from extensions.finish();
 rollback;

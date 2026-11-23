@@ -23,7 +23,7 @@ Based on isolation branch e25e71e. All prior migrations stay unchanged. New migr
 
 ## Verification so far
 
-Local PostgreSQL 15.20 with pgTAP, real database roles and a minimal Auth/Storage SQL harness. All ordered migrations apply from empty application schemas. Five test files execute without SQL failures or not-ok output: 242 + 26 + 30 + 14 + 74 = 386 assertions. Three repeat runs and the exact SQL ACL catalog checks pass locally. The ACL locale mismatch was corrected with deterministic collation and set equality. CI then reached the final lint step. Shared trigger lint errors were corrected in migration018; the latest CI result still must be checked. Multi-site/org tests found and fixed a legacy scope guard reading mutable permissions instead of the assigned immutable version, in migration019.
+Local PostgreSQL 15.20 with pgTAP, real database roles and a minimal Auth/Storage SQL harness. All ordered migrations apply from empty application schemas. Five test files execute without SQL failures or not-ok output: 242 + 26 + 30 + 14 + 87 = 399 assertions. Three repeat runs and the exact SQL ACL catalog checks pass locally. The ACL locale mismatch was corrected with deterministic collation and set equality. CI then reached the final lint step. Shared trigger lint errors were corrected in migration018; the latest CI result still must be checked. Multi-site/org tests found and fixed a legacy scope guard reading mutable permissions instead of the assigned immutable version, in migration019.
 
 This harness is not a running Supabase Auth, PostgREST or Storage service. It does not prove HTTP routes, actual JWT verification, signed storage URLs, backend or frontend integration. GitHub CI and independent review remain required. No claim of full acceptance or production readiness is made.
 
@@ -65,3 +65,7 @@ The user rejected a Next.js backend layer and requested a separate backend servi
 ## Platform read privacy note
 
 The user explicitly approved all-company read visibility for both Platform Owner and Sub-owner (Telegram7487759). Historical engagement before_values/after_values JSON may include personal data. These fields are visible through the audited company read RPC, so platform operators can see that history. Auth credentials and invitation token hashes remain excluded. Every successful read RPC is audited. This is an application audit record, not an independently immutable external audit ledger.
+
+## Additional independent review
+
+Migrations024..026 add identity policy initplans and a memberships user index, close legacy unaudited operator SELECT paths with restrictive policies, add an audited operator roster, remove inert direct invitation-write policies, prevent role-assignment lifetime edits, fail closed on null actions, and attribute global catalog reads to platform audit scope. Existing Owner-class platform mutation powers shared by Subowners are intentionally retained pending any explicit product restriction.

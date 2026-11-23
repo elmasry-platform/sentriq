@@ -17,3 +17,7 @@ alter table storage.objects enable row level security;
 grant usage on schema storage to anon,authenticated,service_role;
 grant select,insert,update,delete on storage.objects to authenticated,service_role;
 create extension pgtap with schema extensions;
+
+-- Match Supabase extension schema access for role-based pgTAP assertions.
+grant usage on schema extensions to anon,authenticated,service_role;
+grant execute on all functions in schema extensions to anon,authenticated,service_role;

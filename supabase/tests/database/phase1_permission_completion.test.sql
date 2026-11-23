@@ -78,7 +78,7 @@ insert into completion_superadmin_invite(invitation_id,token)
   'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeb01','completion-new-superadmin@example.test',interval '7 days',
   '[{"permission_key":"hse.copilot.use","can_use":false,"can_delegate":false,"reason":"Copilot disabled by platform"},{"permission_key":"role_assignment","can_use":true,"can_delegate":false,"reason":"Role delegation disabled by platform"}]'::jsonb,
   'Restricted Company Superadmin invitation');
-insert into completion_assertions(line) select extensions.is((select count(*)::integer from iam.superadmin_invitation_limits where tenant_id='eeeeeeee-eeee-eeee-eeee-eeeeeeeeeb01' and invitation_id is not null),2,'Platform Operator records invitation-level capability restrictions before acceptance');
+insert into completion_assertions(line) select extensions.is((select count(*)::integer from jsonb_array_elements(api.platform_read_company('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeb01','iam.superadmin_invitation_limits')->'rows') item where item->>'invitation_id' is not null),2,'Platform Operator records invitation-level capability restrictions before acceptance');
 reset role;
 select api.accept_invitation((select token from completion_superadmin_invite),'00000000-0000-0000-0000-000000000106');
 insert into completion_assertions(line) select extensions.is((select count(*)::integer from iam.superadmin_capability_limits l join iam.memberships m on m.tenant_id=l.tenant_id and m.id=l.membership_id where m.user_id='00000000-0000-0000-0000-000000000106' and l.capability_key in ('hse.copilot.use','role_assignment') and not l.can_delegate),2,'accepted Superadmin inherits the invitation restriction envelope');
