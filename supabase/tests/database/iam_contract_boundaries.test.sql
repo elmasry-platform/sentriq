@@ -1,6 +1,6 @@
 -- Independent regression tests for the reviewed privilege boundaries.
 begin;
-select extensions.plan(29);
+select extensions.plan(34);
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at)
 select ('90000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','iam-contract-'||i||'@example.test',now(),now(),now()
 from generate_series(1,8) i;
@@ -94,6 +94,21 @@ insert into iam.roles(id,tenant_id,role_key,label,role_family,created_by) values
 set local role authenticated;
 select extensions.throws_ok($$select api.publish_role_version('91000000-0000-0000-0000-000000000001','94000000-0000-0000-0000-000000000001','[{"permission_key":"operations.contract.read","scope_kind":"tenant","can_read":true,"can_write":true,"actions":["read"]}]'::jsonb,'Reject inconsistent write')$$,'23514',null,'role publisher rejects hidden write behind read action');
 select extensions.throws_ok($$select api.publish_role_version('91000000-0000-0000-0000-000000000001','94000000-0000-0000-0000-000000000001','[{"permission_key":"operations.contract.read","scope_kind":"tenant","can_read":false,"can_write":false,"actions":["write"]}]'::jsonb,'Reject action without flags')$$,'23514',null,'role publisher rejects write action without matching flags');
+select extensions.lives_ok($$select api.publish_role_version('91000000-0000-0000-0000-000000000001','94000000-0000-0000-0000-000000000001','[{"permission_key":"operations.contract.read","scope_kind":"tenant","can_read":false,"can_write":false,"actions":["approve"]}]'::jsonb,'Explicit approve role')$$,'Superadmin publishes exact approval role');
+select api.create_delegation('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000004','tenant',null,null,array['role_assignment'],now(),now()+interval '1 hour','Bounded role assignment authority');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000004',true);
+select extensions.throws_ok($$select api.assign_membership_role('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000007','94000000-0000-0000-0000-000000000001',(select id from iam.role_versions where role_id='94000000-0000-0000-0000-000000000001' and version_no=1),'{}'::uuid[],'{}'::uuid[],now(),null,'Attempt approval role escalation')$$,'42501',null,'Admin cannot assign an action they cannot use or delegate');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
+select api.set_permission_action('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000004','operations.contract.read','approve','allow','tenant',null,null,null,null,now(),null,'Admin approval authority');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000004',true);
+select extensions.lives_ok($$select api.assign_membership_role('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000007','94000000-0000-0000-0000-000000000001',(select id from iam.role_versions where role_id='94000000-0000-0000-0000-000000000001' and version_no=1),'{}'::uuid[],'{}'::uuid[],now(),null,'Valid approval role assignment')$$,'authorized delegated assignment succeeds');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000007',true);
+select extensions.ok(api.authorize('91000000-0000-0000-0000-000000000001','operations.contract.read','approve'),'beneficiary receives delegated role action');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
+select api.revoke_delegation('91000000-0000-0000-0000-000000000001',(select id from iam.delegation_envelopes where delegate_membership_id='92000000-0000-0000-0000-000000000004' and status='active'),'Close assignment authority');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000007',true);
+select extensions.ok(not api.authorize('91000000-0000-0000-0000-000000000001','operations.contract.read','approve'),'revoked source removes delegated role action');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
 select extensions.lives_ok($$select * from api.set_default_permission_profile('91000000-0000-0000-0000-000000000001','employee','Operations profile','[{"permission_key":"operations.contract.read","scope_kind":"tenant","can_read":false,"can_write":false,"actions":["export"]}]'::jsonb,'selected_existing_users',array['92000000-0000-0000-0000-000000000007'::uuid],'Selected export profile')$$,'profile supports exact named action from independent module');
 select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000007',true);
 select extensions.ok(api.authorize('91000000-0000-0000-0000-000000000001','operations.contract.read','export'),'named profile action is effective');

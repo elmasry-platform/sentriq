@@ -13,6 +13,9 @@ language sql security definer set search_path='' as 'select 1';
 do $$
 declare
   v_expected_authenticated text[] := array[
+    'api.adopt_permission_action(uuid, uuid, text)',
+    'api.revoke_permission_action(uuid, uuid, text)',
+    'api.revoke_role_assignment(uuid, uuid, text)',
     'api.add_engagement_note(uuid, uuid, text)',
     'api.adopt_permission_decision(uuid, uuid, text)',
     'api.assign_engagement_supervisor(uuid, uuid, uuid, timestamp with time zone, text)',
