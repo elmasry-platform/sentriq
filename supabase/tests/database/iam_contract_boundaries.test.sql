@@ -1,6 +1,6 @@
 -- Independent regression tests for the reviewed privilege boundaries.
 begin;
-select extensions.plan(60);
+select extensions.plan(72);
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at)
 select ('90000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','iam-contract-'||i||'@example.test',now(),now(),now()
 from generate_series(1,8) i;
@@ -217,7 +217,25 @@ select extensions.throws_ok($$select api.assigned_engagement('91000000-0000-0000
 reset role;
 set local role authenticated;
 select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000008',true);
-select extensions.ok(not api.authorize('91000000-0000-0000-0000-000000000001','view_all','read'),'Subowner has no automatic company access');
+select extensions.ok(not api.authorize('91000000-0000-0000-0000-000000000001','view_all','write'),'platform read does not grant operational write');
+select extensions.is(jsonb_array_length(api.platform_list_companies()->'rows'),2,'Subowner can list all companies without memberships');
+select extensions.is(jsonb_array_length(api.platform_read_company('91000000-0000-0000-0000-000000000001','hse.people')->'rows'),1,'Subowner can read company operational data through audited RPC');
+select extensions.is(jsonb_array_length(api.platform_read_company('91000000-0000-0000-0000-000000000002','hse.people')->'rows'),0,'platform read filters rows to requested company');
+select extensions.throws_ok($$select api.platform_read_company('91000000-0000-0000-0000-000000000001','auth.users')$$,'22023','platform_read_resource_not_allowed','platform read cannot request auth credentials');
+select extensions.throws_ok($$select api.platform_read_company('91000000-0000-0000-0000-000000000001','hse.people;delete from core.tenants')$$,'22023','platform_read_resource_not_allowed','resource names are not SQL input');
+select extensions.throws_ok($$select api.platform_read_company('91000000-0000-0000-0000-000000000001','hse.people',101)$$,'22023','platform_read_page_invalid','platform read has bounded pagination');
+select extensions.throws_ok($$select api.manage_subowner('90000000-0000-0000-0000-000000000001',false)$$,'42501','subowner_management_not_allowed','Subowner cannot remove another operator');
+select extensions.throws_ok($$select api.manage_subowner('90000000-0000-0000-0000-000000000006',true)$$,'42501','subowner_management_not_allowed','Subowner cannot add another Subowner');
+reset role;
+select extensions.is((select count(*)::integer from audit.events where action_key='platform.company_data.read' and actor_user_id='90000000-0000-0000-0000-000000000008'),2,'every successful company read creates one audit event');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000001',true);
+set local role authenticated;
+select extensions.is(jsonb_array_length(api.platform_read_company('91000000-0000-0000-0000-000000000001','hse.people')->'rows'),1,'Owner also reads company data without membership');
+select extensions.lives_ok($test$do $loop$ declare resource text;begin foreach resource in array array['audit.events','core.entitlement_grants','core.features','core.invoice_items','core.invoices','core.modules','core.org_units','core.payments','core.plan_entitlements','core.plans','core.sites','core.subscription_items','core.subscriptions','core.tenant_domains','core.tenant_entitlements','core.tenants','core.usage_events','hse.action_updates','hse.contractor_organizations','hse.corrective_actions','hse.engagement_supervisor_notes','hse.evidence_files','hse.findings','hse.follow_ups','hse.form_templates','hse.form_versions','hse.inspection_reviews','hse.inspections','hse.people','hse.person_engagement_events','hse.person_engagements','iam.delegation_envelopes','iam.delegation_review_events','iam.engagement_supervisors','iam.invitations','iam.member_permission_decisions','iam.member_permissions','iam.membership_permission_profiles','iam.membership_role_org_units','iam.membership_role_sites','iam.membership_roles','iam.memberships','iam.org_unit_access','iam.permission_action_grants','iam.permission_catalog','iam.permission_profile_applications','iam.permission_profile_defaults','iam.permission_profile_permissions','iam.permission_profile_versions','iam.permission_profiles','iam.phase1_role_family_review','iam.role_permissions','iam.role_version_permissions','iam.role_versions','iam.roles','iam.site_access','iam.superadmin_capability_limits','iam.superadmin_invitation_limits','iam.task_assignments'] loop perform api.platform_read_company('91000000-0000-0000-0000-000000000001',resource,1);end loop;end $loop$$test$,'every allowlisted platform projection executes');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000007',true);
+select extensions.throws_ok($$select api.platform_read_company('91000000-0000-0000-0000-000000000001','hse.people')$$,'42501','platform_read_not_authorized','regular member cannot use global read RPC');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000008',true);
+
 select extensions.lives_ok($$select api.platform_set_membership_status('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000006','suspended','Platform enforcement action')$$,'platform may suspend exact company account');
 select extensions.lives_ok($$select api.platform_set_membership_status('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000006','active','Platform reactivation action')$$,'platform may reactivate exact company account');
 reset role;

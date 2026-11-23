@@ -22,6 +22,8 @@ declare
     'api.assigned_engagement(uuid, uuid)',
     'api.authorize(uuid, text, text, uuid, uuid, text, uuid)',
     'api.platform_set_membership_status(uuid, uuid, text, text)',
+    'api.platform_read_company(uuid, text, integer, integer)',
+    'api.platform_list_companies(integer, integer)',
     'api.publish_role_version(uuid, uuid, jsonb, text)',
     'api.set_permission_action(uuid, uuid, text, text, text, text, uuid, uuid, text, uuid, timestamp with time zone, timestamp with time zone, text)',
     'api.assign_membership_role(uuid, uuid, uuid, uuid, uuid[], uuid[], timestamp with time zone, timestamp with time zone, text)',

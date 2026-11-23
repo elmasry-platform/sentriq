@@ -23,7 +23,7 @@ Based on isolation branch e25e71e. All prior migrations stay unchanged. New migr
 
 ## Verification so far
 
-Local PostgreSQL 15.20 with pgTAP, real database roles and a minimal Auth/Storage SQL harness. All ordered migrations apply from empty application schemas. Five test files execute without SQL failures or not-ok output: 242 + 26 + 30 + 14 + 60 = 372 assertions. Three repeat runs and the exact SQL ACL catalog checks pass locally. The ACL locale mismatch was corrected with deterministic collation and set equality. CI then reached the final lint step. Shared trigger lint errors were corrected in migration018; the latest CI result still must be checked. Multi-site/org tests found and fixed a legacy scope guard reading mutable permissions instead of the assigned immutable version, in migration019.
+Local PostgreSQL 15.20 with pgTAP, real database roles and a minimal Auth/Storage SQL harness. All ordered migrations apply from empty application schemas. Five test files execute without SQL failures or not-ok output: 242 + 26 + 30 + 14 + 72 = 384 assertions. Three repeat runs and the exact SQL ACL catalog checks pass locally. The ACL locale mismatch was corrected with deterministic collation and set equality. CI then reached the final lint step. Shared trigger lint errors were corrected in migration018; the latest CI result still must be checked. Multi-site/org tests found and fixed a legacy scope guard reading mutable permissions instead of the assigned immutable version, in migration019.
 
 This harness is not a running Supabase Auth, PostgREST or Storage service. It does not prove HTTP routes, actual JWT verification, signed storage URLs, backend or frontend integration. GitHub CI and independent review remain required. No claim of full acceptance or production readiness is made.
 
@@ -31,7 +31,7 @@ This harness is not a running Supabase Auth, PostgREST or Storage service. It do
 
 The recommendations are recorded as inactive candidates. They do not silently change effective authority:
 
-- Optional per-company scope for Subowners.
+- Subowner scope was resolved by the owner: all companies read-only via audited platform RPCs. No extra operational writes.
 - Least-privilege starting profile contents for Admin/Employee.
 - Invitation-time pinned profile version versus acceptance-time current default.
 
@@ -56,4 +56,8 @@ Remote history uses original hosted timestamp versions unlike this repository. A
 
 ## Independent review follow-up
 
-Migrations020..022 protect assignment identity on update, require explicit profile/default provenance (old API rejects ambiguous sources), and align specific-override precedence for named actions with legacy read. Regression tests include nondelegable Superadmin version swap, concurrent profile envelopes, and narrow action restoration. Latest review required again. Owner subsequently requested global platform read visibility, overriding the earlier no-operational-access rule. That change is not implemented yet. It does not imply new mutation authority.
+Migrations020..022 protect assignment identity on update, require explicit profile/default provenance (old API rejects ambiguous sources), and align specific-override precedence for named actions with legacy read. Regression tests include nondelegable Superadmin version swap, concurrent profile envelopes, and narrow action restoration. Latest review required again. Owner subsequently requested global platform read visibility, overriding the earlier no-operational-access rule. Migration023 implements that change via platform_list_companies and platform_read_company, with explicit table/column allowlists, bounded pagination and a same-transaction audit entry per successful call. Existing direct table and authorize mutation boundaries are unchanged. Token hashes, storage object keys, payment/usage metadata and Auth credentials are excluded. It does not imply new mutation authority.
+
+## Backend boundary update
+
+The user rejected a Next.js backend layer and requested a separate backend service. Backend framework selection is pending, and no server code or further server design is part of this change.
