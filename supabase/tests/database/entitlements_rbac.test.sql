@@ -76,9 +76,11 @@ select id,'hse.inspections.read','org_unit',true,false from iam.roles where tena
 insert into iam.role_versions(tenant_id,role_id,version_no,role_family,status,created_by,published_at)
 select tenant_id,id,1,role_family,'published','00000000-0000-0000-0000-000000000001',now()
  from iam.roles where tenant_id is not null;
+alter table iam.role_version_permissions disable trigger role_version_permission_immutable;
 insert into iam.role_version_permissions(role_version_id,permission_key,scope_kind,can_read,can_write)
 select rv.id,rp.permission_key,rp.scope_kind,rp.can_read,rp.can_write
  from iam.role_versions rv join iam.role_permissions rp on rp.role_id=rv.role_id;
+alter table iam.role_version_permissions enable trigger role_version_permission_immutable;
 insert into iam.membership_roles(tenant_id,membership_id,role_id,granted_by)
 select 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','10000000-0000-0000-0000-000000000002',id,'00000000-0000-0000-0000-000000000001'
  from iam.roles where role_key in ('inspector','auditor') and tenant_id is null;

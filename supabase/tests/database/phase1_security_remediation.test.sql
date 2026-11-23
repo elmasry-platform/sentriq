@@ -46,8 +46,10 @@ insert into iam.role_permissions(role_id,permission_key,scope_kind,can_read,acti
  values('60000000-0000-0000-0000-00000000c101','view_all','tenant',true,true);
 insert into iam.role_versions(id,tenant_id,role_id,version_no,role_family,status,created_by,published_at)
  values('61000000-0000-0000-0000-00000000c101','cccccccc-cccc-cccc-cccc-ccccccccca01','60000000-0000-0000-0000-00000000c101',1,'employee','published','00000000-0000-0000-0000-000000000104',now());
+alter table iam.role_version_permissions disable trigger role_version_permission_immutable;
 insert into iam.role_version_permissions(role_version_id,permission_key,scope_kind,can_read)
  values('61000000-0000-0000-0000-00000000c101','view_all','tenant',true);
+alter table iam.role_version_permissions enable trigger role_version_permission_immutable;
 alter table iam.membership_roles disable trigger membership_role_tenant_guard;
 insert into iam.membership_roles(id,tenant_id,membership_id,role_id,role_version_id,granted_by)
  values('62000000-0000-0000-0000-00000000c101','cccccccc-cccc-cccc-cccc-ccccccccca01','10000000-0000-0000-0000-00000000c105','60000000-0000-0000-0000-00000000c101',null,'00000000-0000-0000-0000-000000000104');

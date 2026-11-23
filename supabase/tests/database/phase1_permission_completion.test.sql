@@ -32,8 +32,10 @@ insert into iam.roles(id,tenant_id,role_key,label,role_family,created_by)
  values('60000000-0000-0000-0000-00000000e101','eeeeeeee-eeee-eeee-eeee-eeeeeeeeea01','completion_employee','Completion Employee','employee','00000000-0000-0000-0000-000000000101');
 insert into iam.role_versions(id,tenant_id,role_id,version_no,role_family,status,created_by,published_at)
  values('61000000-0000-0000-0000-00000000e101','eeeeeeee-eeee-eeee-eeee-eeeeeeeeea01','60000000-0000-0000-0000-00000000e101',1,'employee','published','00000000-0000-0000-0000-000000000101',now());
+alter table iam.role_version_permissions disable trigger role_version_permission_immutable;
 insert into iam.role_version_permissions(role_version_id,permission_key,scope_kind,can_read)
  values('61000000-0000-0000-0000-00000000e101','view_all','tenant',true);
+alter table iam.role_version_permissions enable trigger role_version_permission_immutable;
 
 create temporary table completion_superadmin_invite(invitation_id uuid,token text) on commit drop;
 grant insert,select on table pg_temp.completion_superadmin_invite to authenticated;
@@ -96,7 +98,6 @@ insert into completion_assertions(line) select extensions.is(api.revoke_delegati
 insert into completion_assertions(line) select extensions.is((select count(*)::integer from iam.delegation_review_events where tenant_id='eeeeeeee-eeee-eeee-eeee-eeeeeeeeea01' and action='revoke'),1,'revocation review history is appended for the root envelope');
 insert into completion_assertions(line) select extensions.throws_ok($$delete from iam.delegation_review_events where tenant_id='eeeeeeee-eeee-eeee-eeee-eeeeeeeeea01'$$,'42501',null,'authenticated callers cannot delete delegation review history');
 
-select jsonb_build_object(
- 'assertions',(select jsonb_agg(line) from completion_assertions),
- 'summary',(select array_agg(result) from extensions.finish(false) result));
+select line from completion_assertions;
+select * from extensions.finish();
 rollback;

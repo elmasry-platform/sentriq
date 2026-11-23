@@ -13,6 +13,14 @@ language sql security definer set search_path='' as 'select 1';
 do $$
 declare
   v_expected_authenticated text[] := array[
+    'api.add_engagement_note(uuid, uuid, text)',
+    'api.adopt_permission_decision(uuid, uuid, text)',
+    'api.assign_engagement_supervisor(uuid, uuid, uuid, timestamp with time zone, text)',
+    'api.assigned_engagement(uuid, uuid)',
+    'api.authorize(uuid, text, text, uuid, uuid, text, uuid)',
+    'api.platform_set_membership_status(uuid, uuid, text, text)',
+    'api.publish_role_version(uuid, uuid, jsonb, text)',
+    'api.set_permission_action(uuid, uuid, text, text, text, text, uuid, uuid, text, uuid, timestamp with time zone, timestamp with time zone, text)',
     'api.assign_membership_role(uuid, uuid, uuid, uuid, uuid[], uuid[], timestamp with time zone, timestamp with time zone, text)',
     'api.can_use_feature(uuid, text, text, uuid)',
     'api.create_company_invitation(uuid, text, text, interval)',
