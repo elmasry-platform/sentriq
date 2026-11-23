@@ -1,6 +1,6 @@
 -- Independent regression tests for the reviewed privilege boundaries.
 begin;
-select extensions.plan(39);
+select extensions.plan(43);
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at)
 select ('90000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','iam-contract-'||i||'@example.test',now(),now(),now()
 from generate_series(1,8) i;
@@ -114,6 +114,19 @@ select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000007'
 select extensions.ok(api.authorize('91000000-0000-0000-0000-000000000001','operations.contract.read','export'),'named profile action is effective');
 select extensions.ok(not api.authorize('91000000-0000-0000-0000-000000000001','operations.contract.read','approve'),'export profile does not imply approve');
 select extensions.throws_ok($$insert into iam.role_versions(tenant_id,role_id,version_no,role_family,status,created_by) values('91000000-0000-0000-0000-000000000001',gen_random_uuid(),1,'employee','draft',auth.uid())$$,'42501',null,'browser cannot write role versions directly');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
+select api.create_delegation('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000004','employees_default',null,null,array['role_assignment'],now(),now()+interval '1 hour','Delegated employee profile defaults');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000004',true);
+select extensions.lives_ok($$select * from api.set_default_permission_profile('91000000-0000-0000-0000-000000000001','employee','Delegated Employee default','[{"permission_key":"view_all","scope_kind":"tenant","can_read":true,"can_write":false}]'::jsonb,'new_users_only','{}'::uuid[],'Delegated baseline publication')$$,'delegated employee default records source');
+reset role;
+select extensions.ok(exists(select 1 from iam.permission_profile_defaults where tenant_id='91000000-0000-0000-0000-000000000001' and role_family='employee' and source_delegation_id is not null),'default pointer has delegation provenance');
+select extensions.throws_ok($$insert into iam.permission_profile_permissions(tenant_id,profile_version_id,permission_key,scope_kind,can_read) select d.tenant_id,d.profile_version_id,'create_edit','tenant',true from iam.permission_profile_defaults d where tenant_id='91000000-0000-0000-0000-000000000001' and role_family='employee'$$,'42501',null,'published profile cannot be appended even by migration owner');
+set local role authenticated;
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
+select api.revoke_delegation('91000000-0000-0000-0000-000000000001',(select id from iam.delegation_envelopes where delegate_membership_id='92000000-0000-0000-0000-000000000004' and status='active'),'End delegated defaults');
+reset role;
+select extensions.ok(not private.decision_source_valid((select source_delegation_id from iam.permission_profile_defaults where tenant_id='91000000-0000-0000-0000-000000000001' and role_family='employee'),'91000000-0000-0000-0000-000000000001'),'revoked default envelope cannot supply new invitation permissions');
+set local role authenticated;
 reset role;
 insert into core.org_units(id,tenant_id,name) values('95000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000001','Contract Unit');
 insert into core.sites(id,tenant_id,org_unit_id,name,code) values('96000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000001','95000000-0000-0000-0000-000000000001','Contract Site','CONTRACT');
