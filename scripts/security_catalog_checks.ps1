@@ -13,7 +13,28 @@ language sql security definer set search_path='' as 'select 1';
 do $$
 declare
   v_expected_authenticated text[] := array[
+    'api.adopt_permission_action(uuid, uuid, text)',
+    'api.revoke_permission_action(uuid, uuid, text)',
+    'api.revoke_role_assignment(uuid, uuid, text)',
+    'api.add_engagement_note(uuid, uuid, text)',
+    'api.adopt_permission_decision(uuid, uuid, text)',
+    'api.assign_engagement_supervisor(uuid, uuid, uuid, timestamp with time zone, text)',
+    'api.assigned_engagement(uuid, uuid)',
+    'api.authorize(uuid, text, text, uuid, uuid, text, uuid)',
+    'api.platform_set_membership_status(uuid, uuid, text, text)',
+    'api.platform_read_company(uuid, text, integer, integer)',
+    'api.platform_list_companies(integer, integer)',
+    'api.platform_operator_roster(integer, integer)',
+    'api.platform_set_tenant_status(uuid, text, text)',
+    'api.platform_rename_tenant(uuid, text, text)',
+    'api.set_subowner_platform_permission(uuid, text, boolean, text)',
+    'api.publish_role_version(uuid, uuid, jsonb, text)',
+    'api.set_permission_action(uuid, uuid, text, text, text, text, uuid, uuid, text, uuid, timestamp with time zone, timestamp with time zone, text)',
+    'api.assign_membership_role(uuid, uuid, uuid, uuid, uuid[], uuid[], timestamp with time zone, timestamp with time zone, text)',
     'api.can_use_feature(uuid, text, text, uuid)',
+    'api.create_company_invitation(uuid, text, text, interval)',
+    'api.create_company_superadmin_invitation(uuid, text, interval, jsonb, text)',
+    'api.create_delegation(uuid, uuid, text, uuid, uuid, text[], timestamp with time zone, timestamp with time zone, text)',
     'api.create_subscription(uuid, uuid, timestamp with time zone, timestamp with time zone, character, jsonb)',
     'api.create_tenant(text, text, uuid)',
     'api.issue_entitlement_grant(uuid, text, text, uuid, timestamp with time zone, timestamp with time zone, text, text, character, bigint, numeric)',
@@ -22,9 +43,15 @@ declare
     'api.publish_plan(text, integer, text, character, bigint, jsonb)',
     'api.revoke_entitlement_grant(uuid, text)',
     'api.revoke_invitation(uuid, text)',
+    'api.review_delegation(uuid, uuid, text, timestamp with time zone, text)',
+    'api.revoke_delegation(uuid, uuid, text)',
+    'api.set_default_permission_profile(uuid, text, text, jsonb, text, uuid[], text)',
+    'api.set_default_permission_profile(uuid, text, text, jsonb, text, uuid[], text, uuid)',
     'api.set_entitlement_grant_status(uuid, text, text)',
     'api.set_feature_enabled(text, boolean)',
+    'api.set_member_permission_decision(uuid, uuid, text, text, text, uuid, uuid, text, uuid, boolean, boolean, timestamp with time zone, text, text)',
     'api.set_module_enabled(text, boolean)',
+    'api.set_superadmin_capability_limit(uuid, uuid, text, boolean, boolean, text)',
     'api.update_subscription_status(uuid, text)',
     'private.can_access_core(uuid, text, uuid, boolean)',
     'private.can_access_hse(uuid, text, uuid, boolean, text, uuid)',
@@ -33,7 +60,10 @@ declare
     'private.can_review_hse(uuid, uuid, uuid, boolean)',
     'private.current_membership_id(uuid)',
     'private.is_platform_operator()',
-    'private.is_platform_owner()'
+    'private.is_platform_owner()',
+    'private.people_scope_allowed(uuid, uuid, uuid, uuid)',
+    'private.phase1_membership(uuid)',
+    'private.phase1_permission_allowed(uuid, text, uuid, uuid, boolean, text, uuid)'
   ];
   v_expected_service text[] := array[
     'api.accept_invitation(text, uuid)',
@@ -41,7 +71,10 @@ declare
     'api.create_invoice_draft(uuid, text, character, timestamp with time zone, timestamp with time zone)',
     'api.invoice_usage_event(uuid, uuid, text)',
     'api.record_feature_usage(uuid, uuid, text, text, numeric, text, jsonb)',
-    'api.set_membership_status(uuid, uuid, text, uuid, text)'
+    'api.set_membership_status(uuid, uuid, text, uuid, text)',
+    'private.people_scope_allowed(uuid, uuid, uuid, uuid)',
+    'private.phase1_membership(uuid)',
+    'private.phase1_permission_allowed(uuid, text, uuid, uuid, boolean, text, uuid)'
   ];
   v_observed_authenticated text[];
   v_observed_service text[];
@@ -50,7 +83,9 @@ declare
   v_postgres_oid oid := 'postgres'::regrole::oid;
   v_table_oid oid := 'iam.memberships'::regclass::oid;
 begin
-  select coalesce(array_agg(s.signature order by s.signature),array[]::text[])
+  v_expected_authenticated := array(select x from unnest(v_expected_authenticated) as a(x) order by x collate "C");
+  v_expected_service := array(select x from unnest(v_expected_service) as s(x) order by x collate "C");
+  select coalesce(array_agg(s.signature order by s.signature collate "C"),array[]::text[])
     into v_observed_authenticated
     from (
       select n.nspname||'.'||p.proname||'('||pg_catalog.oidvectortypes(p.proargtypes)||')' as signature
@@ -59,11 +94,11 @@ begin
        where n.nspname in ('api','private') and p.prosecdef
          and has_function_privilege('authenticated',p.oid,'EXECUTE')
     ) s;
-  if v_observed_authenticated<>v_expected_authenticated then
+  if not (v_observed_authenticated @> v_expected_authenticated and v_expected_authenticated @> v_observed_authenticated) then
     raise exception 'authenticated SECURITY DEFINER ACL mismatch; observed %, expected %',v_observed_authenticated,v_expected_authenticated;
   end if;
 
-  select coalesce(array_agg(s.signature order by s.signature),array[]::text[])
+  select coalesce(array_agg(s.signature order by s.signature collate "C"),array[]::text[])
     into v_observed_service
     from (
       select n.nspname||'.'||p.proname||'('||pg_catalog.oidvectortypes(p.proargtypes)||')' as signature
@@ -72,7 +107,7 @@ begin
        where n.nspname in ('api','private') and p.prosecdef
          and has_function_privilege('service_role',p.oid,'EXECUTE')
     ) s;
-  if v_observed_service<>v_expected_service then
+  if not (v_observed_service @> v_expected_service and v_expected_service @> v_observed_service) then
     raise exception 'service_role SECURITY DEFINER ACL mismatch; observed %, expected %',v_observed_service,v_expected_service;
   end if;
 
@@ -151,6 +186,10 @@ select 'PASS: SECURITY DEFINER ownership, empty search_path, explicit ACL allowl
 $captured = $sql | & docker exec -i $container psql -X -qAt -v ON_ERROR_STOP=1 -U postgres -d postgres 2>&1
 $exitCode = $LASTEXITCODE
 $output = $captured -join "`n"
-if ($exitCode -ne 0) { throw "Security catalog checks failed: $output" }
+if ($exitCode -ne 0) {
+  $safeError = $output.Replace([char]13, '').Replace([char]10, '%0A')
+  Write-Output "::error title=Security catalog SQL failure::$safeError"
+  throw "Security catalog checks failed: $output"
+}
 if ($output -notmatch 'PASS: SECURITY DEFINER ownership') { throw "Security catalog check success evidence was missing: $output" }
 Write-Output $output

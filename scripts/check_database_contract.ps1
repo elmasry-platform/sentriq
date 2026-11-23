@@ -6,6 +6,22 @@ $forwardMigrations = @($migrations | Where-Object { $_.Name -ne '202611190001_se
 $forwardSql = (($forwardMigrations | ForEach-Object { Get-Content -Raw $_.FullName }) -join "`n").ToLowerInvariant()
 $remediationMigration = Join-Path $root 'supabase/migrations/202611200002_foundation_security_remediation.sql'
 $remediationSql = (Get-Content -Raw $remediationMigration).ToLowerInvariant()
+$phase1SecurityMigration = Join-Path $root 'supabase/migrations/202611230001_phase1_permission_and_tenant_guards.sql'
+$phase1SecuritySql = (Get-Content -Raw $phase1SecurityMigration).ToLowerInvariant()
+$legacyAuthorizationMigration = Join-Path $root 'supabase/migrations/202611240001_legacy_hse_authorization_refactor.sql'
+$legacyAuthorizationSql = (Get-Content -Raw $legacyAuthorizationMigration).ToLowerInvariant()
+$permissionCompletionMigrations = @(
+  '202611240002_phase1_permission_completion.sql',
+  '202611240003_phase1_profile_version_cursor.sql',
+  '202611240004_phase1_permission_policy_acl.sql',
+  '202611240005_phase1_profile_target_alias.sql',
+  '202611240006_phase1_profile_version_query_alias.sql',
+  '202611240007_phase1_rls_initplan_optimization.sql',
+  '202611240008_phase1_member_permission_rls_initplan.sql'
+)
+$permissionCompletionSql = (($permissionCompletionMigrations | ForEach-Object {
+  Get-Content -Raw (Join-Path $root "supabase/migrations/$_")
+}) -join "`n").ToLowerInvariant()
 $required = @(
   'core.features', 'core.plans', 'core.plan_entitlements', 'core.subscriptions',
   'core.subscription_items', 'core.entitlement_grants', 'core.usage_events', 'core.invoices',
@@ -60,7 +76,57 @@ if ($missingRemediation.Count -gt 0) { throw "Missing remediation migration mark
 if ($remediationSql -match 'create\s+table\s+if\s+not\s+exists|hse\.(incidents|risks|permits)') {
   throw 'The remediation migration contains hidden schema creation or future HSE domains.'
 }
-if ($migrations[-1].Name -ne '202611200002_foundation_security_remediation.sql') {
+$phase1SecurityRequired = @(
+  'create or replace function private.can_manage_tenant',
+  'm.member_role=''company_superadmin''',
+  'tenant_id_is_immutable',
+  'join iam.role_versions rv',
+  'new.role_version_id is null',
+  'roles_phase1_family_not_null_check',
+  'specific_override',
+  'o.scope_kind=d.scope_kind',
+  'd.scope_kind=''tenant'' and o.scope_kind in (''site'',''org_unit'',''assigned_task'')'
+)
+$missingPhase1Security = @($phase1SecurityRequired | Where-Object { $phase1SecuritySql -notmatch [regex]::Escape($_) })
+if ($missingPhase1Security.Count -gt 0) { throw "Missing Phase 1 security remediation markers: $($missingPhase1Security -join ', ')" }
+if ($phase1SecuritySql -match '(?is)union\s+all\s+select\s+rp\.scope_kind.*?mr\.role_version_id\s+is\s+null') {
+  throw 'A Phase 1 permission evaluator retains the unversioned role fallback.'
+}
+$legacyAuthorizationRequired = @(
+  'create or replace function private.legacy_global_hse_permission_allowed',
+  "r.tenant_id is null and r.protected",
+  "r.role_family='employee'",
+  'create or replace function private.can_access_hse',
+  'private.phase1_permission_allowed(p_tenant_id,p_permission',
+  'create or replace function api.can_use_feature',
+  'drop policy if exists audit_read on audit.events',
+  'using(user_id=auth.uid() or private.can_manage_tenant(tenant_id))',
+  'actor_membership_id=private.current_membership_id(tenant_id)',
+  "private.phase1_permission_allowed(tenant_id,'hse.audit.read'"
+)
+$missingLegacyAuthorization = @($legacyAuthorizationRequired | Where-Object { $legacyAuthorizationSql -notmatch [regex]::Escape($_) })
+if ($missingLegacyAuthorization.Count -gt 0) { throw "Missing D-30 legacy authorization markers: $($missingLegacyAuthorization -join ', ')" }
+if ($legacyAuthorizationSql -match '(?is)(select\s+private\.is_platform_operator|or\s+private\.is_platform_operator|select\s+private\.has_hse_permission|or\s+private\.has_hse_permission)') {
+  throw 'The D-30 legacy HSE migration calls a broad platform or legacy permission helper.'
+}
+$permissionCompletionRequired = @(
+  'iam.permission_profile_defaults', 'iam.delegation_review_events',
+  'api.set_default_permission_profile', 'api.set_member_permission_decision',
+  'api.create_delegation', 'api.revoke_delegation', 'api.review_delegation',
+  'api.set_superadmin_capability_limit', 'api.create_company_invitation',
+  'api.create_company_superadmin_invitation', 'api.assign_membership_role',
+  'private.guard_delegation_envelope', 'private.revoke_delegation_tree',
+  'private.apply_invitation_phase1_defaults', 'delegation_parent_same_tenant_fkey',
+  'from public,anon,authenticated,service_role', 'force row level security',
+  'selected_existing_users', 'specific_override', 'auth.uid()',
+  'create policy contractor_org_insert', 'create policy engagement_insert',
+  'create policy permission_profile_applications_read',
+  'create policy member_permissions_insert', 'create policy member_permissions_read'
+)
+$missingPermissionCompletion = @($permissionCompletionRequired | Where-Object { $permissionCompletionSql -notmatch [regex]::Escape($_) })
+if ($missingPermissionCompletion.Count -gt 0) { throw "Missing Phase 1 permission completion markers: $($missingPermissionCompletion -join ', ')" }
+$expectedLatestMigration = '202611250028_iam_platform_permission_sets.sql'
+if ($migrations[-1].Name -ne $expectedLatestMigration) {
   throw 'The forward remediation migration is not the latest migration timestamp.'
 }
 $concurrencyHarness = Join-Path $root 'scripts/test_database_concurrency.ps1'
@@ -95,10 +161,15 @@ foreach ($marker in $sequence) {
   if ($index -lt 0) { throw "Database CI repeatability sequence is missing or out of order at: $marker" }
   $lastIndex = $index
 }
-$test = Get-Content -Raw (Join-Path $root 'supabase/tests/database/entitlements_rbac.test.sql')
-$planMatch = [regex]::Match($test, 'extensions\.plan\((\d+)\)')
-$assertionCount = [regex]::Matches($test, 'extensions\.(ok|is|throws_ok|lives_ok|throws_like|cmp_ok|results_eq|set_eq)\(').Count
-if (-not $planMatch.Success -or [int]$planMatch.Groups[1].Value -ne $assertionCount) {
-  throw "pgTAP plan/count mismatch: plan=$($planMatch.Groups[1].Value), assertions=$assertionCount"
+$testFiles = @(Get-ChildItem (Join-Path $root 'supabase/tests/database') -Filter '*.test.sql' | Sort-Object Name)
+$totalAssertions = 0
+foreach ($testFile in $testFiles) {
+  $test = Get-Content -Raw $testFile.FullName
+  $planMatches = [regex]::Matches($test, 'extensions\.plan\((\d+)\)')
+  $assertions = [regex]::Matches($test, 'extensions\.(ok|is|throws_ok|lives_ok|throws_like|cmp_ok|results_eq|set_eq)\(').Count
+  if ($planMatches.Count -ne 1 -or [int]$planMatches[0].Groups[1].Value -ne $assertions) {
+    throw "pgTAP plan/count mismatch in $($testFile.Name): plan=$($planMatches[0].Groups[1].Value), assertions=$assertions"
+  }
+  $totalAssertions += $assertions
 }
-Write-Output "PASS: $($required.Count) base and $($remediationRequired.Count) remediation markers, F-01/F-02 forward migration, F-03 exact cleanup harness, P-05 catalog checks, ordered CI repeatability sequence, and $assertionCount synchronized pgTAP assertions."
+Write-Output "PASS: $($required.Count) base, $($remediationRequired.Count) foundation remediation, $($phase1SecurityRequired.Count) Phase 1 security markers, $($permissionCompletionRequired.Count) permission completion markers, D-30 forward remediation, P-05 catalog checks, ordered CI repeatability sequence, and $totalAssertions synchronized assertions across $($testFiles.Count) pgTAP files."
