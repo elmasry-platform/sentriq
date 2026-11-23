@@ -26,6 +26,8 @@ declare
     'api.platform_list_companies(integer, integer)',
     'api.platform_operator_roster(integer, integer)',
     'api.platform_set_tenant_status(uuid, text, text)',
+    'api.platform_rename_tenant(uuid, text, text)',
+    'api.set_subowner_platform_permission(uuid, text, boolean, text)',
     'api.publish_role_version(uuid, uuid, jsonb, text)',
     'api.set_permission_action(uuid, uuid, text, text, text, text, uuid, uuid, text, uuid, timestamp with time zone, timestamp with time zone, text)',
     'api.assign_membership_role(uuid, uuid, uuid, uuid, uuid[], uuid[], timestamp with time zone, timestamp with time zone, text)',

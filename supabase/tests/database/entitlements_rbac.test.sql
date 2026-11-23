@@ -188,6 +188,9 @@ select extensions.ok(private.has_module_entitlement('bbbbbbbb-bbbb-bbbb-bbbb-bbb
 update core.plans set status='retired' where id='90000000-0000-0000-0000-000000000001';
 select extensions.ok(not private.has_module_entitlement('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','hse'),'retired plan cannot authorize module access');
 update core.plans set status='active' where id='90000000-0000-0000-0000-000000000001';
+insert into iam.platform_permission_grants(user_id,permission_key,granted,updated_by,reason)
+select '00000000-0000-0000-0000-000000000007',permission_key,true,'00000000-0000-0000-0000-000000000001','Explicit privileged fixture permission'
+from iam.platform_permission_catalog where permission_key<>'company.lifecycle' on conflict do nothing;
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000007',true);
 select extensions.lives_ok($$select api.update_subscription_status((select id from second_replacement_capture),'canceled')$$,'Subowner can cancel a company subscription through shared platform authority');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true);

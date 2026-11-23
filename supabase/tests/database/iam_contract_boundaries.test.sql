@@ -1,6 +1,6 @@
 -- Independent regression tests for the reviewed privilege boundaries.
 begin;
-select extensions.plan(87);
+select extensions.plan(97);
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at)
 select ('90000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','iam-contract-'||i||'@example.test',now(),now(),now()
 from generate_series(1,8) i;
@@ -232,11 +232,26 @@ select extensions.ok((api.platform_read_company('91000000-0000-0000-0000-0000000
 select extensions.is(jsonb_array_length(api.platform_operator_roster()->'rows'),2,'platform roster read is available through audited RPC');
 select extensions.ok((api.platform_operator_roster()->>'audit_event_id')::bigint>0,'platform roster returns an audit event');
 select extensions.ok(not exists(select 1 from pg_policies where schemaname='iam' and tablename='invitations' and cmd in ('INSERT','UPDATE')),'stale invitation direct-write policies are removed');
+select extensions.throws_ok($$select api.set_module_enabled('operations',false)$$,'42501',null,'Subowner module toggle denied by default');
+select extensions.throws_ok($$select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','module.toggle',true,'Attempt self escalation')$$,'42501','only_owner_can_manage_platform_permissions','Subowner cannot grant itself platform powers');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000001',true);
+select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','module.toggle',true,'Owner authorizes module toggle');
+select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','delegation.review',true,'Owner authorizes review');
+select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','membership.lifecycle',true,'Owner authorizes member lifecycle');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000008',true);
+select extensions.throws_ok($$select api.platform_set_membership_status('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000002','suspended','Cannot suspend Superadmin')$$,'42501','superadmin_lifecycle_owner_only','Superadmin suspension stays Owner-only even with membership grant');
+select extensions.throws_ok($$select api.platform_rename_tenant('91000000-0000-0000-0000-000000000002','Attempt rename','Cannot rename company')$$,'42501','company_rename_owner_only','company rename stays Owner-only');
+select extensions.throws_ok($$select api.platform_set_tenant_status('91000000-0000-0000-0000-000000000002','closed','Cannot close company')$$,'42501','company_close_owner_only','company closure stays Owner-only');
 select extensions.lives_ok($$select api.review_delegation('91000000-0000-0000-0000-000000000001',(select (r->>'id')::uuid from jsonb_array_elements(api.platform_read_company('91000000-0000-0000-0000-000000000001','iam.delegation_envelopes')->'rows') r where r->>'status'='active' limit 1),'extend',now()+interval '2 hours','Shared platform delegation review')$$,'Subowner can extend another company delegation under shared platform authority');
 select extensions.lives_ok($$select api.platform_set_tenant_status('91000000-0000-0000-0000-000000000002','suspended','Shared platform lifecycle authority')$$,'Subowner retains company suspension authority through guarded RPC');
 select extensions.lives_ok($$select api.platform_set_tenant_status('91000000-0000-0000-0000-000000000002','active','Shared platform reactivation authority')$$,'Subowner retains company reactivation authority');
 select extensions.lives_ok($$select api.set_module_enabled('operations',false)$$,'Subowner retains global module disable authority');
 select api.set_module_enabled('operations',true);
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000001',true);
+select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','module.toggle',false,'Owner revokes module toggle');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000008',true);
+select extensions.throws_ok($$select api.set_module_enabled('operations',false)$$,'42501',null,'revoked platform permission stops immediately');
+
 select extensions.throws_ok($$select api.manage_subowner('90000000-0000-0000-0000-000000000001',false)$$,'42501','subowner_management_not_allowed','Subowner cannot remove another operator');
 select extensions.throws_ok($$select api.manage_subowner('90000000-0000-0000-0000-000000000006',true)$$,'42501','subowner_management_not_allowed','Subowner cannot add another Subowner');
 reset role;
@@ -255,5 +270,12 @@ reset role;
 select extensions.ok(exists(select 1 from pg_indexes where schemaname='iam' and tablename='memberships' and indexdef like '%(user_id)%'),'membership lookup has a user_id-leading index');
 select extensions.ok(not exists(select 1 from pg_policies where schemaname in ('core','iam','hse','audit') and (coalesce(qual,'')||coalesce(with_check,'')) ~ '=[ ]*auth[.]uid[(][)]'),'policy identity comparisons use an initplan rather than a bare call');
 select extensions.ok(exists(select 1 from audit.events where action_key='platform.catalog.read' and tenant_id is null and scope_kind='platform' and record_type='core.features'),'global catalog audit is not attributed to company data');
+select extensions.ok(exists(select 1 from audit.events where action_key='platform.subowner_permission.set' and summary->>'permission_key'='module.toggle'),'platform grant and revoke are audited');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000001',true);
+set local role authenticated;
+select extensions.lives_ok($$select api.platform_rename_tenant('91000000-0000-0000-0000-000000000002','Renamed Contract B','Owner approved rename')$$,'Owner can rename a company through an audited RPC');
+select extensions.lives_ok($$select api.platform_set_tenant_status('91000000-0000-0000-0000-000000000002','closed','Owner approved terminal closure')$$,'Owner can close a company through audited lifecycle');
+select extensions.throws_ok($$select api.platform_set_tenant_status('91000000-0000-0000-0000-000000000002','active','Attempt reopen closed company')$$,'23514','active_or_suspended_company_required','closed company cannot be reactivated');
+reset role;
 select * from extensions.finish();
 rollback;

@@ -72,6 +72,8 @@ insert into completion_assertions(line) select extensions.is((select count(*)::i
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000102',true);
 insert into completion_assertions(line) select extensions.lives_ok($$select * from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeeeea01','new-employee@example.test','employee',interval '7 days')$$,'Company Superadmin can invite an Employee through the authenticated API');
 insert into completion_assertions(line) select extensions.throws_ok($$select * from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeeeea01','admin-forbidden@example.test','company_superadmin',interval '7 days')$$,'42501',null,'Company Superadmin cannot invite another Company Superadmin');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000101',true);
+select api.set_subowner_platform_permission('00000000-0000-0000-0000-000000000103','superadmin.invite',true,'Owner approves test invitation');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000103',true);
 insert into completion_superadmin_invite(invitation_id,token)
  select invitation_id,token from api.create_company_superadmin_invitation(
