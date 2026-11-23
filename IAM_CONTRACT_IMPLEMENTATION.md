@@ -18,12 +18,12 @@ Based on isolation branch e25e71e. All prior migrations stay unchanged. New migr
 - Explicit named actions, action-level grants/denies, profile action composition.
 - Role-version RLS, tenant-qualified references, immutable published content and a guarded publisher.
 - Narrow platform membership suspend/reactivate RPC without operational-data access.
-- Assignment-limited supervisor projection and notes-only mutation API, not yet fully regression-tested.
+- Assignment-limited supervisor projection and notes-only mutation API, covered by projection/notes/unassigned/tenant-negative RPC regression tests.
 - Replaceable identity entry point for new code.
 
 ## Verification so far
 
-Local PostgreSQL 15.20 with pgTAP, real database roles and a minimal Auth/Storage SQL harness. All ordered migrations apply from empty application schemas. Five test files execute without SQL failures or not-ok output: 242 + 26 + 30 + 14 + 29 = 341 assertions. Repeat runs and exact ACL catalog checks are being completed.
+Local PostgreSQL 15.20 with pgTAP, real database roles and a minimal Auth/Storage SQL harness. All ordered migrations apply from empty application schemas. Five test files execute without SQL failures or not-ok output: 242 + 26 + 30 + 14 + 29 = 351 assertions. Three repeat runs and the exact SQL ACL catalog checks pass locally. GitHub Supabase CI currently fails at its ACL check; the environment difference is being investigated, not bypassed.
 
 This harness is not a running Supabase Auth, PostgREST or Storage service. It does not prove HTTP routes, actual JWT verification, signed storage URLs, backend or frontend integration. GitHub CI and independent review remain required. No claim of full acceptance or production readiness is made.
 

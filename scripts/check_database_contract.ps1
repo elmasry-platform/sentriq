@@ -125,7 +125,7 @@ $permissionCompletionRequired = @(
 )
 $missingPermissionCompletion = @($permissionCompletionRequired | Where-Object { $permissionCompletionSql -notmatch [regex]::Escape($_) })
 if ($missingPermissionCompletion.Count -gt 0) { throw "Missing Phase 1 permission completion markers: $($missingPermissionCompletion -join ', ')" }
-$expectedLatestMigration = '202611250013_iam_review_rls_scope.sql'
+$expectedLatestMigration = '202611250014_iam_audit_scopes.sql'
 if ($migrations[-1].Name -ne $expectedLatestMigration) {
   throw 'The forward remediation migration is not the latest migration timestamp.'
 }

@@ -1,6 +1,6 @@
 -- Independent regression tests for the reviewed privilege boundaries.
 begin;
-select extensions.plan(34);
+select extensions.plan(39);
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at)
 select ('90000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','iam-contract-'||i||'@example.test',now(),now(),now()
 from generate_series(1,8) i;
@@ -114,6 +114,27 @@ select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000007'
 select extensions.ok(api.authorize('91000000-0000-0000-0000-000000000001','operations.contract.read','export'),'named profile action is effective');
 select extensions.ok(not api.authorize('91000000-0000-0000-0000-000000000001','operations.contract.read','approve'),'export profile does not imply approve');
 select extensions.throws_ok($$insert into iam.role_versions(tenant_id,role_id,version_no,role_family,status,created_by) values('91000000-0000-0000-0000-000000000001',gen_random_uuid(),1,'employee','draft',auth.uid())$$,'42501',null,'browser cannot write role versions directly');
+reset role;
+insert into core.org_units(id,tenant_id,name) values('95000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000001','Contract Unit');
+insert into core.sites(id,tenant_id,org_unit_id,name,code) values('96000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000001','95000000-0000-0000-0000-000000000001','Contract Site','CONTRACT');
+insert into iam.site_access(tenant_id,membership_id,site_id,granted_by) values('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005','96000000-0000-0000-0000-000000000001','90000000-0000-0000-0000-000000000002');
+insert into iam.org_unit_access(tenant_id,membership_id,org_unit_id,granted_by) values('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005','95000000-0000-0000-0000-000000000001','90000000-0000-0000-0000-000000000002');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000002',true);
+insert into hse.people(id,tenant_id,display_name,person_kind,created_by) values('97000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000001','Assigned worker','employee','90000000-0000-0000-0000-000000000002');
+insert into hse.person_engagements(id,tenant_id,person_id,engagement_type,site_id,org_unit_id,created_by) values('98000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000001','97000000-0000-0000-0000-000000000001','employee','96000000-0000-0000-0000-000000000001','95000000-0000-0000-0000-000000000001','90000000-0000-0000-0000-000000000002');
+set local role authenticated;
+select api.set_permission_action('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005','hse.people.assigned','notes','allow','site','96000000-0000-0000-0000-000000000001',null,null,null,now(),null,'Assigned notes authority');
+select api.set_member_permission_decision('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005','hse.people.assigned','allow','site','96000000-0000-0000-0000-000000000001',null,null,null,true,false,null,null,'Assigned read authority');
+select api.assign_engagement_supervisor('91000000-0000-0000-0000-000000000001','98000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005',null,'Assigned supervisor only');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000005',true);
+select extensions.is(api.assigned_engagement('91000000-0000-0000-0000-000000000001','98000000-0000-0000-0000-000000000001')->'assignment'->>'write','notes_only','assigned supervisor projection is notes only');
+select extensions.is((select count(*)::integer from hse.people),0,'assignment does not expose full People rows');
+select extensions.lives_ok($$select api.add_engagement_note('91000000-0000-0000-0000-000000000001','98000000-0000-0000-0000-000000000001','Supervisor work note')$$,'assigned supervisor can add a note');
+select extensions.throws_ok($$select api.assigned_engagement('91000000-0000-0000-0000-000000000002','98000000-0000-0000-0000-000000000001')$$,'42501',null,'supervisor cannot substitute another tenant');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000007',true);
+select extensions.throws_ok($$select api.assigned_engagement('91000000-0000-0000-0000-000000000001','98000000-0000-0000-0000-000000000001')$$,'42501',null,'unassigned member cannot read supervisor projection');
+reset role;
+set local role authenticated;
 select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000008',true);
 select extensions.ok(not api.authorize('91000000-0000-0000-0000-000000000001','view_all','read'),'Subowner has no automatic company access');
 select extensions.lives_ok($$select api.platform_set_membership_status('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000006','suspended','Platform enforcement action')$$,'platform may suspend exact company account');
