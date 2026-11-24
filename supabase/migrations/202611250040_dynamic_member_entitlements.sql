@@ -174,7 +174,7 @@ create or replace function private.operator_decision_actor() returns uuid
 language plpgsql stable security definer set search_path='' as $$
 declare v uuid:=nullif(current_setting('sentriq.operator_decision_actor',true),'')::uuid;
 begin
- if v is not null and exists(select 1 from iam.platform_operators o where o.user_id=v and o.active)
+ if v is not null and v=auth.uid() and exists(select 1 from iam.platform_operators o where o.user_id=v and o.active)
     and private.platform_permission_allowed('member.permissions',v) then return v; end if;
  return null;
 end $$;
@@ -186,7 +186,7 @@ begin
  if session_user='postgres' and current_setting('role')='none' then return new; end if;
  if private.operator_decision_actor() is not null then return new; end if;
  if tg_op='INSERT' and new.decision='deny' and new.scope_kind='tenant'
-  and current_setting('sentriq.invitation_restriction_deny',true)='on'
+  and pg_trigger_depth()>=2 and current_setting('sentriq.invitation_restriction_deny',true)='on'
   and new.reason like 'Superadmin invitation restriction:%' then return new; end if;
  if tg_op='INSERT' then
   perform private.assert_permission_grantable(new.tenant_id,new.permission_key,new.can_write,new.site_id,new.org_unit_id,new.task_kind,new.task_id);
@@ -204,7 +204,7 @@ declare m iam.memberships%rowtype;
 begin
  if session_user='postgres' and current_setting('role')='none' then return new; end if;
  if tg_op='INSERT' and new.decision='deny' and new.scope_kind='tenant'
-  and current_setting('sentriq.invitation_restriction_deny',true)='on'
+  and pg_trigger_depth()>=2 and current_setting('sentriq.invitation_restriction_deny',true)='on'
   and new.reason like 'Superadmin invitation restriction:%' then return new; end if;
  if tg_op='UPDATE' then
   if new.source_delegation_id is distinct from old.source_delegation_id or new.granted_by is distinct from old.granted_by

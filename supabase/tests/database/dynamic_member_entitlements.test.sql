@@ -1,6 +1,6 @@
 -- Acceptance tests for dynamic member permissions and individual entitlement overrides.
 begin;
-select extensions.plan(63);
+select extensions.plan(69);
 create or replace function pg_temp.as_user(p_uid uuid) returns void language sql as $$
  select set_config('request.jwt.claim.sub',p_uid::text,true), set_config('request.jwt.claim.role','authenticated',true) $$;
 create or replace function pg_temp.az(p_uid uuid,p_tenant uuid,p_key text) returns boolean language plpgsql as $$
@@ -201,5 +201,23 @@ select extensions.is((select count(*)::integer from jsonb_array_elements(api.mem
   where exists(select 1 from iam.permission_catalog c where c.permission_key=e->>'permission_key' and 'read'=any(c.supported_actions))
    and (e->>'effective')::boolean is distinct from pg_temp.az('a0000000-0000-0000-0000-000000000005','a1000000-0000-0000-0000-00000000000a',e->>'permission_key')),0,
   'E2 server effective access matches enforcement for every permission (employee)');
+-- Security probes
+select pg_temp.as_user('a0000000-0000-0000-0000-000000000002');
+select set_config('sentriq.operator_decision_actor','a0000000-0000-0000-0000-000000000001',true);
+select extensions.ok(private.operator_decision_actor() is null,'S1 a forged operator marker does not validate for a different caller');
+select set_config('sentriq.invitation_restriction_deny','on',true);
+set local role authenticated;
+select extensions.throws_ok($$insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,can_read,can_write,status,granted_by,reason) values('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000005','hse.forms.read','deny','tenant',false,false,'active','a0000000-0000-0000-0000-000000000002','Superadmin invitation restriction: forged')$$,'42501',null,'S2 a forged invitation marker does not bypass decision guards outside the trigger');
+reset role;
+select extensions.ok(not has_function_privilege('authenticated','private.member_module_state(uuid,uuid,text)','EXECUTE')
+ and not has_function_privilege('authenticated','private.member_feature_state(uuid,uuid,text)','EXECUTE')
+ and not has_function_privilege('authenticated','private.entitlement_grant_live(uuid)','EXECUTE')
+ and not has_function_privilege('anon','api.member_effective_access(uuid,uuid)','EXECUTE')
+ and not has_function_privilege('anon','api.platform_set_member_entitlement(uuid,uuid,text,text,text,boolean,boolean,timestamptz,timestamptz)','EXECUTE'),
+ 'S3 helpers are private and anon cannot call the new RPCs');
+select extensions.throws_ok($$select api.platform_set_member_entitlement('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000005','hse','hse.copilot','both keys')$$,'42501',null,'S4 module and feature together are rejected');
+select pg_temp.as_user('a0000000-0000-0000-0000-000000000001');
+select extensions.throws_ok($$select api.platform_set_member_entitlement('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000005','hse',null,'both keys',false,true)$$,'42501',null,'S5 can_delegate requires can_use');
+select extensions.throws_ok($$select api.platform_set_member_decision('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000005','hse.copilot.use','allow','Allow without entitlement')$$,'42501',null,'S6 Allow cannot create an entitlement');
 select extensions.finish();
 rollback;
