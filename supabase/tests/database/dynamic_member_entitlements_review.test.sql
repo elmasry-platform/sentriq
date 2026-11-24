@@ -1,6 +1,6 @@
 -- Acceptance tests for dynamic member permissions and individual entitlement overrides.
 begin;
-select extensions.plan(35);
+select extensions.plan(36);
 create or replace function pg_temp.as_user(p_uid uuid) returns void language sql as $$
  select set_config('request.jwt.claim.sub',p_uid::text,true), set_config('request.jwt.claim.role','authenticated',true) $$;
 create or replace function pg_temp.az(p_uid uuid,p_tenant uuid,p_key text) returns boolean language plpgsql as $$
@@ -133,7 +133,11 @@ select pg_temp.as_user('a0000000-0000-0000-0000-000000000001');
 select api.platform_set_member_entitlement('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000003','hse',null,'Restrict module',false,false);
 select pg_temp.as_user('a0000000-0000-0000-0000-000000000003');
 select extensions.throws_ok($$select api.create_delegation('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000004','tenant',null,null,array['direct_permission_decision'],now(),null,'restricted delegation')$$,null,null,'R8 a member restricted from the module cannot create a delegation');
-select extensions.throws_ok($$select api.create_company_invitation('a1000000-0000-0000-0000-00000000000a','blocked@example.test','employee')$$,'42501',null,'R8 a member restricted from the module cannot invite');
+select extensions.lives_ok($$select api.create_company_invitation('a1000000-0000-0000-0000-00000000000a','one-module@example.test','employee')$$,'R8 041: restricted from one module only, the Superadmin can still invite (no hardcoded module)');
+select pg_temp.as_user('a0000000-0000-0000-0000-000000000001');
+select api.platform_set_member_entitlement('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000003','core',null,'Restrict module',false,false);
+select pg_temp.as_user('a0000000-0000-0000-0000-000000000003');
+select extensions.throws_ok($$select api.create_company_invitation('a1000000-0000-0000-0000-00000000000a','blocked@example.test','employee')$$,'42501',null,'R8 a member restricted from every module cannot invite');
 
 -- R12: the operator RPC still works under the real (non-bypass) role, including clearing a protected Deny
 reset role;
