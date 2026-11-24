@@ -36,7 +36,7 @@ set local role authenticated;
 
 -- Company Superadmin
 select extensions.lives_ok($$insert into inv select 'a',* from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','New-A@Example.test','employee',interval '7 days','Alice Example','[{"permission_key":"hse.forms.read","decision":"deny"},{"permission_key":"hse.forms.manage","decision":"allow"}]'::jsonb,'Starter access for a new inspector')$$,'S1 Superadmin invites an Employee with a name and initial access');
-select extensions.throws_ok($$select * from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','adm@example.test','company_admin')$$,'42501',null,'S2 Superadmin cannot invite an Admin');
+select extensions.throws_ok($$select * from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','adm@example.test','company_superadmin')$$,'42501',null,'S2 Superadmin cannot invite Superadmin level');
 select extensions.throws_ok($$select * from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','x1@example.test','employee',interval '7 days','X','[{"permission_key":"hse.forms.read","decision":"deny"}]'::jsonb)$$,'22023',null,'S3 initial access needs a reason');
 select extensions.throws_ok($$select * from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','x2@example.test','employee',interval '7 days','X','[{"permission_key":"nope.key","decision":"deny"}]'::jsonb,'reason ok')$$,'22023',null,'S4 unknown permission key is rejected');
 select extensions.throws_ok($$select * from api.platform_create_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','x3@example.test','X','employee',interval '7 days','[]'::jsonb,'reason ok')$$,'42501',null,'S5 a Superadmin cannot use the platform invitation RPC');

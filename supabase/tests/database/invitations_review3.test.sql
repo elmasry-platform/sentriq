@@ -1,8 +1,8 @@
 begin;
-select extensions.plan(8);
+select extensions.plan(12);
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select ('00000000-0000-0000-0000-0000000008'||lpad(n::text,2,'0'))::uuid,'authenticated','authenticated',e,'',now(),'{}','{}',now(),now()
-from (values (1,'r3-owner@example.test'),(2,'r3-sub@example.test'),(3,'r3-sa@example.test'),(11,'r3-lim@example.test'),(12,'r3-ent@example.test'),(13,'r3-plat@example.test'),(14,'r3-rep@example.test')) v(n,e);
+from (values (1,'r3-owner@example.test'),(2,'r3-sub@example.test'),(3,'r3-sa@example.test'),(11,'r3-lim@example.test'),(12,'r3-ent@example.test'),(13,'r3-plat@example.test'),(14,'r3-rep@example.test'),(15,'r3-adm@example.test')) v(n,e);
 select private.bootstrap_platform_owner('00000000-0000-0000-0000-000000000801');
 insert into iam.platform_operators(user_id,operator_role,created_by) values('00000000-0000-0000-0000-000000000802','subowner','00000000-0000-0000-0000-000000000801');
 insert into core.tenants(id,name,created_by) values('eeeeeeee-eeee-eeee-eeee-eeeeeeee0d01','R3 Co','00000000-0000-0000-0000-000000000801');
@@ -58,6 +58,22 @@ select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000802'
 select extensions.ok((select count(*) from api.list_permission_catalog())>0,'R7 an operator can list it');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000811',true);
 select extensions.throws_ok($$select * from api.list_permission_catalog()$$,'42501',null,'R8 an ordinary member cannot');
+reset role;
+delete from core.entitlement_grants where tenant_id='eeeeeeee-eeee-eeee-eeee-eeeeeeee0d01' and membership_id is not null;
+-- Superadmin invites an Admin (not Superadmin level)
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000803',true);
+set local role authenticated;
+select extensions.lives_ok($$insert into inv select 'adm',* from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0d01','r3-adm@example.test','company_admin',interval '7 days','Adam','[{"permission_key":"hse.forms.read","decision":"allow"},{"permission_key":"hse.findings.read","decision":"deny"}]'::jsonb,'Admin starter access')$$,'R9 a Superadmin invites an Admin with initial access');
+select extensions.throws_ok($$select * from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0d01','r3-sa2@example.test','company_superadmin')$$,'42501',null,'R10 but not a Superadmin');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000815',true);
+select api.accept_my_invitation((select token from inv where name='adm'));
+reset role;
+select extensions.is((select m.member_role||':'||string_agg(d.permission_key||'='||d.decision,',' order by d.permission_key) from iam.member_permission_decisions d join iam.memberships m on m.id=d.membership_id where m.user_id='00000000-0000-0000-0000-000000000815' and d.status='active' group by m.member_role),'company_admin:hse.findings.read=deny,hse.forms.read=allow','R11 the Admin joins as company_admin with the agreed access');
+insert into iam.superadmin_capability_limits(tenant_id,membership_id,capability_key,can_use,can_delegate,set_by,reason) values
+ ('eeeeeeee-eeee-eeee-eeee-eeeeeeee0d01','10000000-0000-0000-0000-0000000e0803','hse.reports.read',true,false,'00000000-0000-0000-0000-000000000801','limit test');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000803',true);
+set local role authenticated;
+select extensions.throws_ok($$select * from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0d01','r3-adm2@example.test','company_admin',interval '7 days','A2','[{"permission_key":"hse.reports.read","decision":"allow"}]'::jsonb,'Admin starter access')$$,'42501',null,'R12 the same per-permission limits apply to Admin invitations');
 reset role;
 -- Replace/skip of pre-existing decisions: not reachable through acceptance. Reactivating a membership
 -- runs private.reset_contract_authorizations, which suspends all its active decisions first (and the

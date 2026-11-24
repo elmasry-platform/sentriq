@@ -96,7 +96,7 @@ declare v_actor uuid:=auth.uid(); v_email text:=lower(btrim(p_email)); v_member 
 begin
  select m.id into v_member from iam.memberships m join core.tenants t on t.id=m.tenant_id
   where m.tenant_id=p_tenant_id and m.user_id=v_actor and m.member_role='company_superadmin' and m.status='active' and t.status='active';
- if v_actor is null or v_member is null or p_level is distinct from 'employee' or v_email is null or length(v_email)<3 or length(v_email)>254
+ if v_actor is null or v_member is null or p_level is null or p_level not in ('company_admin','employee') or v_email is null or length(v_email)<3 or length(v_email)>254
    or p_ttl is null or p_ttl<=interval '0' or p_ttl>interval '30 days'
    or (p_name is not null and length(btrim(p_name)) not between 1 and 200)
    or not exists(select 1 from (select distinct module_key from iam.permission_catalog where enabled) c
