@@ -39,6 +39,10 @@ alter table core.entitlement_grants
     check (delegated_from_grant_id is null
       or (membership_id is not null and delegated_by is not null and can_use and not can_delegate));
 
+-- Origin marker: a decision written through the platform operator RPC cannot be
+-- cleared, replaced, shortened or bypassed by anything a company Superadmin can call.
+alter table iam.member_permission_decisions add column protected_origin boolean not null default false;
+
 create index entitlement_grants_member_idx on core.entitlement_grants(tenant_id,membership_id)
   where membership_id is not null;
 create index entitlement_grants_delegated_from_idx on core.entitlement_grants(delegated_from_grant_id)
@@ -62,7 +66,12 @@ language sql stable security definer set search_path='' as $$
         and p.can_use and p.can_delegate and p.status='active' and p.revoked_at is null and p.starts_at<=now()
         and (p.expires_at is null or now()<p.expires_at)
         and (p.expires_at is null or (g.expires_at is not null and g.expires_at<=p.expires_at))
-        and p.module_key is not distinct from g.module_key and p.feature_key is not distinct from g.feature_key)))
+        and p.module_key is not distinct from g.module_key and p.feature_key is not distinct from g.feature_key
+        and not exists(select 1 from core.entitlement_grants r
+          where r.tenant_id=p.tenant_id and r.membership_id=p.membership_id and not r.can_use
+            and r.status='active' and r.revoked_at is null and r.starts_at<=now() and (r.expires_at is null or now()<r.expires_at)
+            and (r.module_key=coalesce(g.module_key,(select f.module_key from core.features f where f.feature_key=g.feature_key))
+              or (r.feature_key is not null and r.feature_key=g.feature_key))))))
 $$;
 
 -- Company-level module entitlement (subscription or tenant-wide grant). Unchanged
@@ -185,15 +194,27 @@ language plpgsql security definer set search_path='' as $$
 begin
  if session_user='postgres' and current_setting('role')='none' then return new; end if;
  if private.operator_decision_actor() is not null then return new; end if;
+ if tg_op='INSERT' and new.protected_origin then
+  raise exception 'protected_origin_requires_operator' using errcode='42501'; end if;
  if tg_op='INSERT' and new.decision='deny' and new.scope_kind='tenant'
   and pg_trigger_depth()>=2 and current_setting('sentriq.invitation_restriction_deny',true)='on'
   and new.reason like 'Superadmin invitation restriction:%' then return new; end if;
  if tg_op='INSERT' then
   perform private.assert_permission_grantable(new.tenant_id,new.permission_key,new.can_write,new.site_id,new.org_unit_id,new.task_kind,new.task_id);
- elsif old.decision='deny' and old.status='active' and new.status='revoked'
-  and old.granted_by is distinct from private.request_actor_id()
-  and not private.can_manage_tenant(old.tenant_id) then
-  raise exception 'deny_removal_requires_creator_or_superadmin' using errcode='42501';
+ else
+  if new.protected_origin is distinct from old.protected_origin then
+   raise exception 'protected_origin_requires_operator' using errcode='42501'; end if;
+  if old.protected_origin and (new.status is distinct from old.status or new.decision is distinct from old.decision
+     or new.starts_at is distinct from old.starts_at or new.ends_at is distinct from old.ends_at
+     or new.can_read is distinct from old.can_read or new.can_write is distinct from old.can_write) then
+   raise exception 'operator_decision_requires_operator' using errcode='42501'; end if;
+  if old.decision='deny' and old.status='active' and new.status<>'active' then
+   if exists(select 1 from iam.memberships m where m.tenant_id=old.tenant_id and m.id=old.membership_id
+        and m.user_id=private.request_actor_id()) then
+    raise exception 'own_restriction_cannot_be_cleared' using errcode='42501'; end if;
+   if old.granted_by is distinct from private.request_actor_id() and not private.can_manage_tenant(old.tenant_id) then
+    raise exception 'deny_removal_requires_creator_or_superadmin' using errcode='42501'; end if;
+  end if;
  end if;
  return new;
 end $$;
@@ -276,11 +297,11 @@ begin
     and d.org_unit_id is not distinct from p_org_unit_id and d.status='active';
  if p_choice in ('allow','deny') then
   insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,site_id,org_unit_id,
-    can_read,can_write,status,granted_by,ends_at,reason)
+    can_read,can_write,status,granted_by,ends_at,reason,protected_origin)
   values(p_tenant_id,p_membership_id,p_permission_key,p_choice,p_scope_kind,p_site_id,p_org_unit_id,
     case when p_choice='allow' then coalesce(p_can_read,false) else false end,
     case when p_choice='allow' then coalesce(p_can_write,false) else false end,
-    'active',v_actor,p_ends_at,btrim(p_reason)) returning id into v_id;
+    'active',v_actor,p_ends_at,btrim(p_reason),true) returning id into v_id;
  end if;
  insert into audit.events(tenant_id,actor_user_id,scope_kind,action_key,record_type,record_id,summary)
  values(p_tenant_id,v_actor,p_scope_kind,'iam.platform.member_decision.set','iam.memberships',p_membership_id,
@@ -339,6 +360,8 @@ begin
  select * into g from core.entitlement_grants where id=p_grant_id and membership_id is not null and delegated_from_grant_id is null
    and revoked_at is null for update;
  if g.id is null then raise exception 'member_entitlement_not_found_or_final' using errcode='22023'; end if;
+ if exists(select 1 from iam.memberships m where m.tenant_id=g.tenant_id and m.id=g.membership_id and m.user_id=v_actor) then
+  raise exception 'platform_member_entitlement_revoke_not_authorized' using errcode='42501'; end if;
  for r in select id,tenant_id from core.entitlement_grants where (id=g.id or delegated_from_grant_id=g.id) and revoked_at is null loop
   update core.entitlement_grants set revoked_at=now(),revoked_by=v_actor,revoke_reason=btrim(p_reason) where id=r.id;
   insert into audit.events(tenant_id,actor_user_id,scope_kind,action_key,record_type,record_id,summary)
@@ -371,6 +394,8 @@ begin
  if v_am.id is null or s.id is null or s.membership_id is distinct from v_am.id or s.delegated_from_grant_id is not null
    or not s.can_use or not s.can_delegate or not private.entitlement_grant_live(s.id)
    or p_target_membership_id=v_am.id
+   or (case when s.feature_key is not null then private.member_feature_state(p_tenant_id,v_am.id,s.feature_key)
+            else private.member_module_state(p_tenant_id,v_am.id,s.module_key) end) not in ('company','personal_exception')
    or not exists(select 1 from iam.memberships tm where tm.tenant_id=p_tenant_id and tm.id=p_target_membership_id and tm.status='active') then
   raise exception 'entitlement_delegation_not_authorized' using errcode='42501'; end if;
  v_exp:=coalesce(p_expires_at,s.expires_at);
@@ -559,13 +584,11 @@ begin
  if exists(select 1 from iam.member_permission_decisions d where d.tenant_id=p_tenant_id and d.membership_id=m.id
    and d.permission_key=p_permission_key and d.decision='deny' and d.status='active'
    and d.starts_at<=now() and (d.ends_at is null or now()<d.ends_at)
-   and private.decision_source_valid(d.source_delegation_id,d.tenant_id)
    and private.scope_matches(d.scope_kind,d.site_id,d.org_unit_id,d.task_kind,d.task_id,p_site_id,p_org_unit_id,p_task_kind,p_task_id)
-   and not (d.scope_kind='tenant' and private.valid_specific_override(p_tenant_id,m.id,p_permission_key,p_site_id,p_org_unit_id,p_task_kind,p_task_id))) then return false; end if;
+   and not (d.scope_kind='tenant' and not coalesce(d.protected_origin,false) and private.valid_specific_override(p_tenant_id,m.id,p_permission_key,p_site_id,p_org_unit_id,p_task_kind,p_task_id))) then return false; end if;
  if exists(select 1 from iam.permission_action_grants d where d.tenant_id=p_tenant_id and d.membership_id=m.id
    and d.permission_key=p_permission_key and d.action_key=p_action and d.decision='deny' and d.status='active'
    and d.starts_at<=now() and (d.ends_at is null or now()<d.ends_at)
-   and private.decision_source_valid(d.source_delegation_id,d.tenant_id)
    and private.scope_matches(d.scope_kind,d.site_id,d.org_unit_id,d.task_kind,d.task_id,p_site_id,p_org_unit_id,p_task_kind,p_task_id)
    and not (d.scope_kind='tenant' and private.valid_specific_override(p_tenant_id,m.id,p_permission_key,p_site_id,p_org_unit_id,p_task_kind,p_task_id))) then return false; end if;
  if m.member_role='company_superadmin' then
@@ -619,7 +642,7 @@ AS $function$
  ), denies as (
    select d.* from actor a join iam.member_permission_decisions d on d.tenant_id=p_tenant_id and d.membership_id=a.id
    where d.permission_key=p_permission_key and d.decision='deny' and d.status='active'
-     and private.decision_source_valid(d.source_delegation_id,d.tenant_id) and d.starts_at<=now() and (d.ends_at is null or now()<d.ends_at)
+     and d.starts_at<=now() and (d.ends_at is null or now()<d.ends_at)
      and (d.scope_kind='tenant' or (d.scope_kind='site' and d.site_id=p_site_id)
        or (d.scope_kind='org_unit' and d.org_unit_id=p_org_unit_id)
        or (d.scope_kind='assigned_task' and d.task_kind=p_task_kind and d.task_id=p_task_id))
@@ -642,7 +665,7 @@ AS $function$
           where ta.tenant_id=p_tenant_id and ta.membership_id=(select id from actor) and ta.task_kind=p_task_kind
             and ta.task_id=p_task_id and ta.active and (ta.site_id is null or ta.site_id=p_site_id)
             and (ta.org_unit_id is null or ta.org_unit_id=p_org_unit_id))))))
-   and not exists(select 1 from denies d where not exists(
+   and not exists(select 1 from denies d where d.protected_origin or not exists(
      select 1 from actor a join iam.member_permission_decisions o on o.tenant_id=p_tenant_id and o.membership_id=a.id
      where o.permission_key=p_permission_key and o.decision='allow' and o.exception_kind='specific_override'
        and o.status='active' and o.starts_at<=now() and (o.ends_at is null or now()<o.ends_at)
@@ -940,9 +963,9 @@ begin
      and d.permission_key=l.capability_key and d.decision='deny' and d.scope_kind='tenant' and d.status='active';
    if v_dec is null then
     insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,can_read,can_write,
-      status,granted_by,starts_at,reason)
+      status,granted_by,starts_at,reason,protected_origin)
     values(l.tenant_id,l.membership_id,l.capability_key,'deny','tenant',false,false,'active',l.set_by,
-      least(l.updated_at,now()),left('Migrated from superadmin capability limit: '||coalesce(l.reason,'no reason recorded'),500))
+      least(l.updated_at,now()),left('Migrated from superadmin capability limit: '||coalesce(l.reason,'no reason recorded'),500),true)
     returning id into v_dec;
    end if;
    insert into iam.superadmin_limit_migration_review values(l.tenant_id,l.membership_id,l.capability_key,l.can_use,l.can_delegate,
@@ -971,3 +994,277 @@ grant execute on function api.platform_set_member_decision(uuid,uuid,text,text,t
  api.delegate_member_entitlement(uuid,uuid,uuid,text,timestamptz),
  api.revoke_delegated_entitlement(uuid,text),
  api.member_effective_access(uuid,uuid) to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- Review hardening
+-- ---------------------------------------------------------------------------
+-- Must be applied as the postgres role (migration runner): the decision triggers
+-- let session_user=postgres bypass their guards, and the data migration above
+-- writes protected rows directly.
+
+-- Legacy platform grant RPCs: membership-scoped rows are Operation A/B territory.
+-- They require member.entitlements, refuse self-targets, and a personal
+-- restriction can never be lifted by suspending it (revoke it with the audited RPC).
+create or replace function api.issue_entitlement_grant(p_tenant_id uuid, p_module_key text, p_feature_key text, p_membership_id uuid, p_starts_at timestamptz, p_expires_at timestamptz, p_reason text, p_billing_treatment text, p_currency character, p_unit_price_minor bigint, p_quota numeric default null)
+ returns uuid language plpgsql security definer set search_path to '' as $function$
+declare v_id uuid;
+begin
+ if not private.platform_permission_allowed('entitlement.issue') or p_starts_at is null or p_expires_at is null or p_starts_at>=p_expires_at
+   or ((p_module_key is not null)::integer+(p_feature_key is not null)::integer<>1)
+   or (p_module_key is not null and p_membership_id is not null)
+   or p_billing_treatment not in ('tenant_billable','complimentary','platform_absorbed')
+   or (p_unit_price_minor is not null and p_currency is null)
+   or (p_currency is not null and p_currency::text !~ '^[A-Z]{3}$') then
+   if p_module_key is not null and p_membership_id is not null then
+     raise exception 'module_grants_are_tenant_scoped' using errcode='22023';
+   end if;
+   raise exception 'grant_not_allowed' using errcode='42501';
+ end if;
+ if p_membership_id is not null and (not private.platform_permission_allowed('member.entitlements')
+    or exists(select 1 from iam.memberships m where m.tenant_id=p_tenant_id and m.id=p_membership_id and m.user_id=auth.uid())) then
+   raise exception 'grant_not_allowed' using errcode='42501';
+ end if;
+ if p_membership_id is not null and not exists(select 1 from iam.memberships
+    where tenant_id=p_tenant_id and id=p_membership_id) then
+   raise exception 'grant_membership_mismatch' using errcode='23503';
+ end if;
+ if p_module_key is not null and not exists(select 1 from core.modules where module_key=p_module_key) then
+   raise exception 'module_disabled_or_unknown' using errcode='22023';
+ end if;
+ if p_feature_key is not null and not exists(select 1 from core.features where feature_key=p_feature_key and enabled) then
+   raise exception 'feature_disabled_or_unknown' using errcode='22023';
+ end if;
+ insert into core.entitlement_grants(tenant_id,module_key,feature_key,membership_id,starts_at,expires_at,
+   granted_by,reason,billing_treatment,bill_to_tenant_id,currency,unit_price_minor,quota)
+ values(p_tenant_id,p_module_key,p_feature_key,p_membership_id,p_starts_at,p_expires_at,auth.uid(),p_reason,
+   p_billing_treatment,case when p_billing_treatment='tenant_billable' then p_tenant_id end,
+   p_currency,p_unit_price_minor,p_quota) returning id into v_id;
+ return v_id;
+end $function$;
+
+create or replace function api.set_entitlement_grant_status(p_grant_id uuid, p_status text, p_reason text)
+ returns void language plpgsql security definer set search_path to '' as $function$
+declare v_tenant uuid; v_old_status text; v_mem uuid; v_use boolean;
+begin
+ if not private.platform_permission_allowed('entitlement.status') or p_status not in ('active','suspended')
+   or length(btrim(coalesce(p_reason,'')))<3 then
+   raise exception 'grant_status_update_not_allowed' using errcode='42501';
+ end if;
+ select tenant_id,status,membership_id,can_use into v_tenant,v_old_status,v_mem,v_use from core.entitlement_grants
+   where id=p_grant_id and revoked_at is null for update;
+ if not found then raise exception 'grant_not_found_or_revoked' using errcode='22023'; end if;
+ if v_mem is not null and (not private.platform_permission_allowed('member.entitlements')
+    or exists(select 1 from iam.memberships m where m.tenant_id=v_tenant and m.id=v_mem and m.user_id=auth.uid())) then
+   raise exception 'grant_status_update_not_allowed' using errcode='42501';
+ end if;
+ if not v_use and p_status<>'active' then
+   raise exception 'restriction_cannot_be_suspended' using errcode='42501';
+ end if;
+ if v_old_status=p_status then return; end if;
+ update core.entitlement_grants set status=p_status where id=p_grant_id;
+ insert into audit.events(tenant_id,actor_user_id,scope_kind,action_key,record_type,record_id,summary)
+ values(null,auth.uid(),'platform','core.entitlement_grants.status_changed','core.entitlement_grants',p_grant_id,
+   jsonb_build_object('tenant_id',v_tenant,'before_status',v_old_status,'after_status',p_status,'reason',p_reason));
+end $function$;
+
+create or replace function api.revoke_entitlement_grant(p_grant_id uuid, p_reason text)
+ returns void language plpgsql security definer set search_path to '' as $function$
+declare v_tenant uuid; v_mem uuid;
+begin
+ if not private.platform_permission_allowed('entitlement.revoke') or length(btrim(coalesce(p_reason,'')))<3 then raise exception 'grant_revocation_not_allowed' using errcode='42501'; end if;
+ select tenant_id,membership_id into v_tenant,v_mem from core.entitlement_grants where id=p_grant_id and revoked_at is null;
+ if v_mem is not null and (not private.platform_permission_allowed('member.entitlements')
+    or exists(select 1 from iam.memberships m where m.tenant_id=v_tenant and m.id=v_mem and m.user_id=auth.uid())) then
+   raise exception 'grant_revocation_not_allowed' using errcode='42501';
+ end if;
+ update core.entitlement_grants set revoked_at=now(),revoked_by=auth.uid(),revoke_reason=p_reason where id=p_grant_id and revoked_at is null;
+ if not found then raise exception 'grant_not_active' using errcode='22023'; end if;
+end $function$;
+
+-- Usage is attributed only to a live grant (parent holder, expiry and restrictions included).
+CREATE OR REPLACE FUNCTION api.record_feature_usage(p_tenant_id uuid, p_membership_id uuid, p_feature_key text, p_idempotency_key text, p_quantity numeric, p_usage_unit text, p_metadata jsonb DEFAULT '{}'::jsonb)
+ RETURNS uuid
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+declare
+ v_id uuid; v_existing core.usage_events%rowtype; v_grant core.entitlement_grants%rowtype;
+ v_grant_id uuid; v_subscription_id uuid; v_cap numeric; v_used numeric;
+ v_rate bigint; v_ccy char(3); v_treatment text:='tenant_billable';
+ v_period_start timestamptz; v_period_end timestamptz;
+begin
+ if auth.role()<>'service_role' or p_tenant_id is null or p_membership_id is null or p_feature_key is null
+   or p_quantity is null or p_quantity<=0 or p_idempotency_key is null
+   or length(p_idempotency_key) not between 8 and 200 or p_usage_unit is null
+   or jsonb_typeof(coalesce(p_metadata,'{}'::jsonb))<>'object'
+   or coalesce(p_metadata,'{}'::jsonb) ?| array['prompt','response','completion','token_text','secret','authorization'] then
+   raise exception 'trusted_usage_recording_required' using errcode='42501';
+ end if;
+ -- Lock and replay the key before entitlement/quota checks. Exact retries are
+ -- reads of the original immutable event, including after quota exhaustion or
+ -- grant expiry. Billing configuration remains the original event snapshot.
+ perform pg_advisory_xact_lock(hashtextextended('sentriq-usage-key:'||p_idempotency_key,0));
+ select * into v_existing from core.usage_events where idempotency_key=p_idempotency_key for update;
+ if found then
+   if v_existing.tenant_id is distinct from p_tenant_id
+     or v_existing.beneficiary_membership_id is distinct from p_membership_id
+     or v_existing.feature_key is distinct from p_feature_key
+     or v_existing.usage_unit is distinct from p_usage_unit
+     or v_existing.quantity is distinct from p_quantity
+     or v_existing.metadata is distinct from coalesce(p_metadata,'{}'::jsonb) then
+     raise exception 'idempotency_key_payload_conflict' using errcode='23505';
+   end if;
+   return v_existing.id;
+ end if;
+
+ if not exists(select 1 from core.features f where f.feature_key=p_feature_key and f.usage_unit=p_usage_unit) then
+   raise exception 'usage_unit_or_feature_invalid' using errcode='22023';
+ end if;
+
+ if not private.has_feature_entitlement(p_tenant_id,p_membership_id,p_feature_key) then
+   raise exception 'feature_not_entitled' using errcode='42501';
+ end if;
+
+ select * into v_grant from core.entitlement_grants g
+  where g.tenant_id=p_tenant_id and g.feature_key=p_feature_key
+    and (g.membership_id=p_membership_id or g.membership_id is null)
+    and g.can_use and private.entitlement_grant_live(g.id)
+  order by (g.membership_id is not null) desc,g.starts_at desc,g.id
+  limit 1 for share;
+ if found then
+   v_grant_id:=v_grant.id; v_cap:=v_grant.quota; v_treatment:=v_grant.billing_treatment;
+   v_rate:=v_grant.unit_price_minor; v_ccy:=v_grant.currency;
+ else
+   select s.id,pe.quota,pe.usage_rate_minor,pe.usage_currency,s.current_period_start,s.current_period_end
+     into v_subscription_id,v_cap,v_rate,v_ccy,v_period_start,v_period_end
+   from core.subscriptions s join core.plans p on p.id=s.plan_id and p.status='active'
+     join core.subscription_items si on si.tenant_id=s.tenant_id and si.subscription_id=s.id
+     join core.plan_entitlements pe on pe.id=si.plan_entitlement_id and pe.plan_id=s.plan_id
+   where s.tenant_id=p_tenant_id and pe.feature_key=p_feature_key and s.status in ('active','trialing')
+     and s.starts_at<=now() and s.current_period_start<=now() and now()<s.current_period_end
+     and si.starts_at<=now() and (si.ends_at is null or now()<si.ends_at)
+   limit 1 for share of s,si;
+   if v_subscription_id is null then raise exception 'feature_not_entitled' using errcode='42501'; end if;
+ end if;
+
+ if v_cap is not null then
+   if v_grant_id is not null then
+     perform pg_advisory_xact_lock(hashtextextended('sentriq-usage-quota-grant:'||v_grant_id::text,0));
+     select coalesce(sum(quantity),0) into v_used from core.usage_events where grant_id=v_grant_id;
+   else
+     perform pg_advisory_xact_lock(hashtextextended('sentriq-usage-quota-sub:'||p_tenant_id::text||':'||p_feature_key||':'||v_period_start::text,0));
+     select coalesce(sum(quantity),0) into v_used from core.usage_events
+       where tenant_id=p_tenant_id and feature_key=p_feature_key and grant_id is null
+         and occurred_at>=v_period_start and occurred_at<v_period_end;
+   end if;
+   if v_used+p_quantity>v_cap then raise exception 'grant_usage_quota_exceeded' using errcode='54000'; end if;
+ end if;
+
+ insert into core.usage_events(tenant_id,beneficiary_membership_id,feature_key,grant_id,payer_tenant_id,
+   billing_treatment,idempotency_key,usage_unit,quantity,unit_price_minor,currency,metadata)
+ values(p_tenant_id,p_membership_id,p_feature_key,v_grant_id,
+   case when v_treatment='tenant_billable' then p_tenant_id end,v_treatment,p_idempotency_key,p_usage_unit,
+   p_quantity,v_rate,v_ccy,coalesce(p_metadata,'{}'::jsonb))
+ on conflict do nothing returning id into v_id;
+ if v_id is null then
+   select * into v_existing from core.usage_events where idempotency_key=p_idempotency_key;
+   if v_existing.tenant_id is distinct from p_tenant_id
+     or v_existing.beneficiary_membership_id is distinct from p_membership_id
+     or v_existing.feature_key is distinct from p_feature_key
+     or v_existing.usage_unit is distinct from p_usage_unit
+     or v_existing.quantity is distinct from p_quantity
+     or v_existing.metadata is distinct from coalesce(p_metadata,'{}'::jsonb) then
+     raise exception 'idempotency_key_payload_conflict' using errcode='23505';
+   end if;
+   return v_existing.id;
+ end if;
+ return v_id;
+end $function$;
+
+-- Invitations and delegations: the module check is member-aware (invitation flow itself stays out of scope).
+CREATE OR REPLACE FUNCTION api.create_company_invitation(p_tenant_id uuid, p_email text, p_level text, p_ttl interval DEFAULT '7 days'::interval)
+ RETURNS TABLE(invitation_id uuid, token text)
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+declare v_actor uuid:=auth.uid(); v_token text:=encode(extensions.gen_random_bytes(32),'hex');
+        v_id uuid; v_email text:=lower(btrim(p_email));
+begin
+ if v_actor is null or p_level not in ('company_admin','employee') or v_email is null
+   or length(v_email)<3 or length(v_email)>254 or p_ttl is null
+   or p_ttl<=interval '0' or p_ttl>interval '30 days'
+   or not exists(select 1 from iam.memberships m join core.tenants t on t.id=m.tenant_id
+      where m.tenant_id=p_tenant_id and m.user_id=v_actor and m.member_role='company_superadmin'
+        and m.status='active' and t.status='active' and private.has_member_module_entitlement(p_tenant_id,m.id,'hse')) then
+   raise exception 'company_invitation_not_allowed' using errcode='42501';
+ end if;
+ perform pg_advisory_xact_lock(hashtextextended('sentriq-invitation:'||p_tenant_id::text||':'||v_email,0));
+ if exists(select 1 from iam.memberships m where m.tenant_id=p_tenant_id and m.email=v_email and m.status='active') then
+   raise exception 'active_membership_already_exists' using errcode='23505';
+ end if;
+ update iam.invitations set revoked_at=now(),revoked_by=v_actor,revoke_reason='Expired before reinvitation'
+  where tenant_id=p_tenant_id and email=v_email and accepted_at is null and revoked_at is null and expires_at<=now();
+ if exists(select 1 from iam.invitations where tenant_id=p_tenant_id and email=v_email
+    and accepted_at is null and revoked_at is null) then
+   raise exception 'invitation_already_pending' using errcode='23505';
+ end if;
+ insert into iam.invitations(tenant_id,email,token_hash,intended_level,invited_by,expires_at)
+ values(p_tenant_id,v_email,extensions.digest(v_token,'sha256'),p_level,v_actor,now()+p_ttl)
+ returning id into v_id;
+ return query select v_id,v_token;
+end $function$;
+
+CREATE OR REPLACE FUNCTION api.create_delegation(p_tenant_id uuid, p_delegate_membership_id uuid, p_level text, p_site_id uuid, p_org_unit_id uuid, p_allowed_capabilities text[], p_starts_at timestamp with time zone, p_ends_at timestamp with time zone, p_reason text)
+ RETURNS uuid
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+declare v_actor uuid:=auth.uid(); v_grantor uuid; v_parent uuid; v_id uuid; c text;
+begin
+ select m.id into v_grantor from iam.memberships m join core.tenants t on t.id=m.tenant_id
+  where m.tenant_id=p_tenant_id and m.user_id=v_actor and m.status='active' and t.status='active'
+    and private.has_member_module_entitlement(p_tenant_id,m.id,'hse');
+ if v_actor is null or v_grantor is null or p_allowed_capabilities is null or cardinality(p_allowed_capabilities)=0
+   or p_reason is null or length(btrim(p_reason)) not between 3 and 500
+   or p_starts_at is null or (p_ends_at is not null and p_ends_at<=p_starts_at) then
+   raise exception 'delegation_request_invalid' using errcode='22023';
+ end if;
+ foreach c in array p_allowed_capabilities loop
+   if not private.phase1_can_manage(p_tenant_id,c,p_delegate_membership_id,p_site_id,p_org_unit_id) then
+     raise exception 'delegation_capability_not_authorized' using errcode='42501';
+   end if;
+ end loop;
+ if exists(select 1 from iam.memberships m where m.tenant_id=p_tenant_id and m.id=v_grantor and m.member_role<>'company_superadmin') then
+   select d.id into v_parent from iam.delegation_envelopes d where d.tenant_id=p_tenant_id
+    and d.delegate_membership_id=v_grantor and d.status='active' and d.starts_at<=now()
+    and (d.ends_at is null or now()<d.ends_at)
+    and p_allowed_capabilities <@ d.allowed_capabilities
+    and ((d.level='tenant') or (d.level='employees_default' and p_level='employees_default')
+      or (d.level='site' and p_level='site' and d.site_id=p_site_id)
+      or (d.level='org_unit' and p_level='org_unit' and d.org_unit_id=p_org_unit_id))
+    and (d.ends_at is null or (p_ends_at is not null and p_ends_at<=d.ends_at))
+    order by d.created_at desc limit 1;
+   if v_parent is null then raise exception 'delegation_parent_envelope_required' using errcode='42501'; end if;
+ end if;
+ insert into iam.delegation_envelopes(tenant_id,grantor_membership_id,delegate_membership_id,level,site_id,org_unit_id,
+   allowed_capabilities,starts_at,ends_at,parent_envelope_id,created_by)
+ values(p_tenant_id,v_grantor,p_delegate_membership_id,p_level,p_site_id,p_org_unit_id,p_allowed_capabilities,
+   p_starts_at,p_ends_at,v_parent,v_actor) returning id into v_id;
+ insert into audit.events(tenant_id,actor_user_id,actor_membership_id,scope_kind,action_key,record_type,record_id,summary)
+  values(p_tenant_id,v_actor,v_grantor,p_level,'iam.delegation.created','iam.delegation_envelopes',v_id,
+   jsonb_build_object('delegate_membership_id',p_delegate_membership_id,'capabilities',p_allowed_capabilities,'reason',btrim(p_reason)));
+ return v_id;
+end $function$;
+
+-- people_scope_allowed is an internal helper; callers are definer functions only.
+revoke all on function private.people_scope_allowed(uuid,uuid,uuid,uuid) from public,anon,authenticated;
+
+-- member_effective_access reports the tenant-wide result. Site and org-unit people
+-- scope (private.people_scope_allowed) only narrows a request that names a site or
+-- org unit, so it cannot change a tenant-wide answer; scoped rows are flagged
+-- scoped=true and must be evaluated by api.authorize with the concrete scope.
+comment on function api.member_effective_access(uuid,uuid) is
+ 'Tenant-wide effective access. Scoped results (scoped=true) are not tenant-wide; use api.authorize with the concrete site or org unit.';

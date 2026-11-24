@@ -67,3 +67,13 @@ Three independent layers are evaluated server-side: the company subscription, in
 - Delegation: only from a live personal grant with `can_delegate=true`, to another active member of the same company, same module/feature, no longer than the source, never delegable again. Revoking the source ends delegated access. Company Superadmin status alone grants none of this.
 - `api.member_effective_access(tenant, membership)` is the single server-calculated read for the UI. Each permission reports `entitlement_state` (company, personal_exception, restricted, none) and `functional_state` (deny, default_superadmin, allow, allow_scoped, inherited, none), plus lapsed history. Personal grants report live, expired, revoked or not_started.
 - Invitation acceptance and delivery are out of scope for this change.
+
+### Review hardening in 040
+
+- Apply 040 as the `postgres` role (the migration runner). The decision triggers let `session_user = postgres` bypass their guards, and the limit data migration writes protected rows directly. Apply is a separate approval step.
+- Decisions written through `api.platform_set_member_decision` (and Denies migrated from superadmin limits) carry `protected_origin`. A company Superadmin cannot clear, replace, shorten or bypass them (a `specific_override` does not lift a protected tenant Deny), and nobody can clear a Deny on their own membership.
+- A Deny keeps enforcing even if the delegation envelope it came from ends. The source check applies to Allow only.
+- Membership-scoped grants through the legacy `issue_entitlement_grant`, `set_entitlement_grant_status` and `revoke_entitlement_grant` RPCs now need `member.entitlements`; a personal restriction cannot be suspended, only revoked through the audited RPC.
+- A delegated grant is live only while its source holder is not restricted for that module or feature; the holder cannot delegate while restricted.
+- `member_effective_access` is tenant-wide. Site and org-unit people scope only narrows a request that names one, so scoped rows are flagged `scoped` and must be checked with `api.authorize`.
+- Baseline: `iam_contract_boundaries` tests 73, 75-80, 85 and 96 fail identically on `main` (stale Subowner assertions) and are not caused by 040.

@@ -67,7 +67,6 @@ declare
     'private.current_membership_id(uuid)',
     'private.is_platform_operator()',
     'private.is_platform_owner()',
-    'private.people_scope_allowed(uuid, uuid, uuid, uuid)',
     'private.phase1_membership(uuid)',
     'private.phase1_permission_allowed(uuid, text, uuid, uuid, boolean, text, uuid)'
   ];
