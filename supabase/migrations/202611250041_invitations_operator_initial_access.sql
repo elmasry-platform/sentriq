@@ -67,6 +67,8 @@ create or replace function private.insert_invitation(p_tenant_id uuid,p_email te
 returns table(invitation_id uuid, token text) language plpgsql security definer set search_path='' as $$
 declare v_token text:=encode(extensions.gen_random_bytes(32),'hex'); v_id uuid; v_email text:=lower(btrim(p_email));
 begin
+ if nullif(btrim(p_reason),'') is not null and length(btrim(p_reason)) not between 3 and 500 then
+   raise exception 'invitation_reason_invalid' using errcode='22023'; end if;
  perform pg_advisory_xact_lock(hashtextextended('sentriq-invitation:'||p_tenant_id::text||':'||v_email,0));
  if exists(select 1 from iam.memberships m where m.tenant_id=p_tenant_id and m.email=v_email and m.status='active') then
    raise exception 'active_membership_already_exists' using errcode='23505'; end if;
@@ -94,7 +96,7 @@ declare v_actor uuid:=auth.uid(); v_email text:=lower(btrim(p_email)); v_member 
 begin
  select m.id into v_member from iam.memberships m join core.tenants t on t.id=m.tenant_id
   where m.tenant_id=p_tenant_id and m.user_id=v_actor and m.member_role='company_superadmin' and m.status='active' and t.status='active';
- if v_actor is null or v_member is null or p_level<>'employee' or v_email is null or length(v_email)<3 or length(v_email)>254
+ if v_actor is null or v_member is null or p_level is distinct from 'employee' or v_email is null or length(v_email)<3 or length(v_email)>254
    or p_ttl is null or p_ttl<=interval '0' or p_ttl>interval '30 days'
    or (p_name is not null and length(btrim(p_name)) not between 1 and 200)
    or not exists(select 1 from (select distinct module_key from iam.permission_catalog where enabled) c
@@ -126,7 +128,7 @@ returns table(invitation_id uuid, token text) language plpgsql security definer 
 declare v_actor uuid:=auth.uid(); v_email text:=lower(btrim(p_email)); v_dec jsonb;
 begin
  if v_actor is null or not private.is_platform_operator() or not private.platform_permission_allowed('superadmin.invite')
-   or p_level not in ('company_superadmin','company_admin','employee')
+   or p_level is null or p_level not in ('company_superadmin','company_admin','employee')
    or v_email is null or length(v_email)<3 or length(v_email)>254
    or p_ttl is null or p_ttl<=interval '0' or p_ttl>interval '30 days'
    or p_reason is null or length(btrim(p_reason)) not between 3 and 500
@@ -312,6 +314,15 @@ end $$;
 create trigger invitation_initial_access after update of accepted_at on iam.invitations
  for each row execute function private.apply_invitation_initial_access();
 
+-- Explicit company-Superadmin check for invitation management. Operators pass only through the
+-- superadmin.invite power; they never pass through this helper.
+create or replace function private.is_company_superadmin_of(p_tenant_id uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+ select exists(select 1 from iam.memberships m join core.tenants t on t.id=m.tenant_id
+  where m.tenant_id=p_tenant_id and m.user_id=auth.uid() and m.member_role='company_superadmin' and m.status='active' and t.status='active')
+$$;
+revoke all on function private.is_company_superadmin_of(uuid) from public,anon,authenticated,service_role;
+
 -- Operators can revoke too; every revoke is audited.
 create or replace function api.revoke_invitation(p_invitation_id uuid,p_reason text) returns void
 language plpgsql security definer set search_path='' as $$
@@ -319,7 +330,7 @@ declare v_t uuid;
 begin
  update iam.invitations set revoked_at=now(),revoked_by=auth.uid(),revoke_reason=btrim(p_reason)
  where id=p_invitation_id and accepted_at is null and revoked_at is null and length(btrim(coalesce(p_reason,'')))>=3
-   and (private.can_manage_tenant(tenant_id) or (private.is_platform_operator() and private.platform_permission_allowed('superadmin.invite')))
+   and ((private.is_platform_operator() and private.platform_permission_allowed('superadmin.invite')) or private.is_company_superadmin_of(tenant_id))
  returning tenant_id into v_t;
  if v_t is null then raise exception 'invitation_not_found_or_final' using errcode='22023'; end if;
  insert into audit.events(tenant_id,actor_user_id,scope_kind,action_key,record_type,record_id,summary)
@@ -333,7 +344,7 @@ declare v_op boolean:=private.is_platform_operator() and private.platform_permis
 begin
  if auth.uid() is null or p_limit is null or p_limit not between 1 and 200
     or (p_status is not null and p_status not in ('pending','accepted','expired','revoked'))
-    or not (v_op or (p_tenant_id is not null and private.can_manage_tenant(p_tenant_id))) then
+    or not (v_op or (p_tenant_id is not null and private.is_company_superadmin_of(p_tenant_id))) then
    raise exception 'invitation_list_not_allowed' using errcode='42501'; end if;
  return jsonb_build_object('rows',coalesce((select jsonb_agg(r order by r.created_at desc) from (
    select i.id,i.tenant_id,t.name as company_name,i.email,i.invitee_name,i.intended_level,i.origin,i.created_at,i.expires_at,
