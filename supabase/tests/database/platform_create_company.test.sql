@@ -14,7 +14,6 @@ select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000601'
 set local role authenticated;
 select extensions.lives_ok($$insert into c select api.platform_create_company('  Acme Mining ','Mining')$$,'C1 Owner creates a company');
 select extensions.is((select count(*)::int from iam.memberships m join c on c.id=m.tenant_id),0,'C2 no member is created');
-select extensions.is((select count(*)::int from audit.events e join c on c.id=e.tenant_id where e.action_key='company.create'),1,'C3 creation is audited');
 select extensions.throws_ok($$select api.platform_create_company('acme mining')$$,'23505',null,'C4 duplicate name rejected');
 select extensions.throws_ok($$select api.platform_create_company(' ')$$,'22023',null,'C5 empty name rejected');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000602',true);
@@ -22,6 +21,7 @@ select extensions.lives_ok($$select api.platform_create_company('Sub Made Co')$$
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000603',true);
 select extensions.throws_ok($$select api.platform_create_company('Nope Co')$$,'42501',null,'C7 non-operator denied');
 reset role;
+select extensions.is((select count(*)::int from audit.events e join c on c.id=e.tenant_id where e.action_key='company.create'),1,'C3 creation is audited');
 select extensions.is((select name from core.tenants where name='Acme Mining'),'Acme Mining','C8 name is trimmed');
 select * from extensions.finish();
 rollback;
