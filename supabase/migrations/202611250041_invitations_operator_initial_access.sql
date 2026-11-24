@@ -312,6 +312,19 @@ language sql stable security definer set search_path='' as $$
 $$;
 revoke all on function private.is_company_superadmin_of(uuid) from public,anon,authenticated,service_role;
 
+-- Enabled permission catalog for the invitation form (module-agnostic: the UI builds its key list and
+-- presets from this, never from hardcoded module names). Operators and active company Superadmins only.
+create or replace function api.list_permission_catalog() returns table(permission_key text,module_key text,feature_key text)
+language plpgsql stable security definer set search_path='' as $$
+begin
+ if auth.uid() is null or not (private.is_platform_operator() or exists(
+    select 1 from iam.memberships m where m.user_id=auth.uid() and m.member_role='company_superadmin' and m.status='active')) then
+   raise exception 'permission_catalog_not_allowed' using errcode='42501'; end if;
+ return query select c.permission_key,c.module_key,c.feature_key from iam.permission_catalog c where c.enabled order by c.module_key,c.permission_key;
+end $$;
+revoke all on function api.list_permission_catalog() from public,anon;
+grant execute on function api.list_permission_catalog() to authenticated;
+
 -- Operators can revoke too; every revoke is audited.
 create or replace function api.revoke_invitation(p_invitation_id uuid,p_reason text) returns void
 language plpgsql security definer set search_path='' as $$

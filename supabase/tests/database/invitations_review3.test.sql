@@ -1,5 +1,5 @@
 begin;
-select extensions.plan(5);
+select extensions.plan(8);
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select ('00000000-0000-0000-0000-0000000008'||lpad(n::text,2,'0'))::uuid,'authenticated','authenticated',e,'',now(),'{}','{}',now(),now()
 from (values (1,'r3-owner@example.test'),(2,'r3-sub@example.test'),(3,'r3-sa@example.test'),(11,'r3-lim@example.test'),(12,'r3-ent@example.test'),(13,'r3-plat@example.test'),(14,'r3-rep@example.test')) v(n,e);
@@ -50,6 +50,15 @@ set local role authenticated;
 select api.accept_my_invitation((select token from inv where name='plat'));
 reset role;
 select extensions.is((select string_agg(permission_key||':'||decision,',') from iam.member_permission_decisions d join iam.memberships m on m.id=d.membership_id where m.user_id='00000000-0000-0000-0000-000000000813' and d.status='active'),'hse.findings.read:deny','R5 platform inviter lost member.permissions: Allow skipped, Deny applied');
+-- catalog listing
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000803',true);
+set local role authenticated;
+select extensions.ok((select count(*) from api.list_permission_catalog())>0,'R6 a company Superadmin can list the enabled catalog');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000802',true);
+select extensions.ok((select count(*) from api.list_permission_catalog())>0,'R7 an operator can list it');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000811',true);
+select extensions.throws_ok($$select * from api.list_permission_catalog()$$,'42501',null,'R8 an ordinary member cannot');
+reset role;
 -- Replace/skip of pre-existing decisions: not reachable through acceptance. Reactivating a membership
 -- runs private.reset_contract_authorizations, which suspends all its active decisions first (and the
 -- own-restriction guard refuses to clear a protected one), so no conflicting active decision exists at accept time.
