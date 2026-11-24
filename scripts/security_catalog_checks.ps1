@@ -32,7 +32,7 @@ declare
     'api.set_permission_action(uuid, uuid, text, text, text, text, uuid, uuid, text, uuid, timestamp with time zone, timestamp with time zone, text)',
     'api.assign_membership_role(uuid, uuid, uuid, uuid, uuid[], uuid[], timestamp with time zone, timestamp with time zone, text)',
     'api.can_use_feature(uuid, text, text, uuid)',
-    'api.create_company_invitation(uuid, text, text, interval)',
+    'api.create_company_invitation(uuid, text, text, interval, text, jsonb, text)',
     'api.create_company_superadmin_invitation(uuid, text, interval, jsonb, text)',
     'api.create_delegation(uuid, uuid, text, uuid, uuid, text[], timestamp with time zone, timestamp with time zone, text)',
     'api.create_subscription(uuid, uuid, timestamp with time zone, timestamp with time zone, character, jsonb)',

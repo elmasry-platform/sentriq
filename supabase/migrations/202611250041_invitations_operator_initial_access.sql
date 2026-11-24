@@ -230,6 +230,16 @@ begin
    raise exception 'invitation_invalid_or_expired' using errcode='22023'; end if;
  if not exists(select 1 from core.tenants t where t.id=v_inv.tenant_id and t.status='active') then
    raise exception 'invitation_invalid_or_expired' using errcode='22023'; end if;
+ -- The inviter must still hold the standing that let them invite: a company inviter is an active
+ -- Superadmin of this active company, an operator inviter is still an active operator. Otherwise the
+ -- invitation is dead, whatever level it carries. (An active operator also counts for origin 'company',
+ -- because the earlier operator-made Superadmin invitations carry that origin.)
+ if not (case when v_inv.origin='platform' then exists(select 1 from iam.platform_operators o where o.user_id=v_inv.invited_by and o.active)
+        else exists(select 1 from iam.memberships i where i.tenant_id=v_inv.tenant_id and i.user_id=v_inv.invited_by
+               and i.member_role='company_superadmin' and i.status='active')
+             -- invitations made by an operator through the earlier create_company_superadmin_invitation carry origin 'company'
+             or exists(select 1 from iam.platform_operators o where o.user_id=v_inv.invited_by and o.active) end) then
+   raise exception 'invitation_invalid_or_expired' using errcode='22023'; end if;
  if exists(select 1 from iam.memberships m where m.tenant_id=v_inv.tenant_id and m.email=v_email and m.user_id<>p_auth_user_id) then
    raise exception 'membership_email_belongs_to_another_user' using errcode='23505'; end if;
  insert into iam.memberships(tenant_id,user_id,member_role,status,email,display_name)

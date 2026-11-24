@@ -96,10 +96,10 @@ select api.platform_set_membership_status('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01'
 reset role;
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000514',true);
 set local role authenticated;
-select extensions.lives_ok($$select api.accept_my_invitation((select token from inv where name='d'))$$,'H5 the invitation is still accepted');
+select extensions.throws_ok($$select api.accept_my_invitation((select token from inv where name='d'))$$,'22023',null,'H5 a suspended inviter makes the pending invitation unusable');
 reset role;
-select extensions.is((select string_agg(permission_key||':'||decision,',') from iam.member_permission_decisions d join iam.memberships m on m.id=d.membership_id where m.user_id='00000000-0000-0000-0000-000000000514' and d.status='active'),'hse.forms.read:deny','H6 inviter gone: Deny applied, Allow skipped');
-select extensions.ok((select (summary->'skipped'->0->>'why')='inviter_no_longer_authorised' and (summary->>'applied')::int=1 from audit.events where action_key='iam.invitation.initial_access.applied' and summary->>'invitation_id'=(select invitation_id::text from inv where name='d')),'H7 the audit row records applied and skipped keys with the reason');
+select extensions.is((select count(*)::int from iam.memberships where user_id='00000000-0000-0000-0000-000000000514'),0,'H6 no membership and no decisions are created');
+select extensions.is((select count(*)::int from audit.events where action_key='iam.invitation.initial_access.applied' and summary->>'invitation_id'=(select invitation_id::text from inv where name='d')),0,'H7 nothing was applied or audited as applied');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000501',true);
 set local role authenticated;
 select api.platform_set_membership_status('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','10000000-0000-0000-0000-0000000e0502','active','inviter back');

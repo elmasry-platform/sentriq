@@ -1,5 +1,5 @@
 begin;
-select extensions.plan(12);
+select extensions.plan(13);
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select ('00000000-0000-0000-0000-0000000008'||lpad(n::text,2,'0'))::uuid,'authenticated','authenticated',e,'',now(),'{}','{}',now(),now()
 from (values (1,'r3-owner@example.test'),(2,'r3-sub@example.test'),(3,'r3-sa@example.test'),(11,'r3-lim@example.test'),(12,'r3-ent@example.test'),(13,'r3-plat@example.test'),(14,'r3-rep@example.test'),(15,'r3-adm@example.test')) v(n,e);
@@ -74,6 +74,19 @@ insert into iam.superadmin_capability_limits(tenant_id,membership_id,capability_
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000803',true);
 set local role authenticated;
 select extensions.throws_ok($$select * from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0d01','r3-adm2@example.test','company_admin',interval '7 days','A2','[{"permission_key":"hse.reports.read","decision":"allow"}]'::jsonb,'Admin starter access')$$,'42501',null,'R12 the same per-permission limits apply to Admin invitations');
+reset role;
+-- An Admin invitation dies when its Superadmin is suspended before acceptance
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000803',true);
+set local role authenticated;
+insert into inv select 'adm3',* from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0d01','r3-adm3@example.test','company_admin',interval '7 days','Adam3');
+reset role;
+set local session_replication_role=replica;
+update iam.memberships set status='suspended' where id='10000000-0000-0000-0000-0000000e0803';
+set local session_replication_role=origin;
+insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at) values ('00000000-0000-0000-0000-000000000816','authenticated','authenticated','r3-adm3@example.test','',now(),'{}','{}',now(),now());
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000816',true);
+set local role authenticated;
+select extensions.throws_ok($$select api.accept_my_invitation((select token from inv where name='adm3'))$$,'22023',null,'R13 a suspended Superadmin cannot mint an Admin through a pending invitation');
 reset role;
 -- Replace/skip of pre-existing decisions: not reachable through acceptance. Reactivating a membership
 -- runs private.reset_contract_authorizations, which suspends all its active decisions first (and the
