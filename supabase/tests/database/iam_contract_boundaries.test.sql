@@ -29,10 +29,14 @@ insert into iam.task_assignments(tenant_id,membership_id,task_kind,task_id,assig
 select '91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005','inspection',
  ('93000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'90000000-0000-0000-0000-000000000002' from generate_series(1,2) i;
 alter table iam.task_assignments enable trigger task_assignment_target_guard;
+select set_config('sentriq.migration_runner','on',true);
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,task_kind,task_id,can_read,granted_by,reason)
 values('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005','hse.contract.task','allow','assigned_task','inspection','93000000-0000-0000-0000-000000000001',true,'90000000-0000-0000-0000-000000000002','Only task one allowed');
+select set_config('sentriq.migration_runner','off',true);
+select set_config('sentriq.migration_runner','on',true);
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,can_read,granted_by,reason)
 values('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000005','operations.contract.read','allow','tenant',true,'90000000-0000-0000-0000-000000000002','Operations independent of HSE');
+select set_config('sentriq.migration_runner','off',true);
 select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000005',true);
 select set_config('request.jwt.claim.role','authenticated',true);
 set local role authenticated;
@@ -55,8 +59,10 @@ select api.create_delegation('91000000-0000-0000-0000-000000000001','92000000-00
 select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000004',true);
 select extensions.throws_ok($$select api.set_member_permission_decision('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000006','view_all','allow','tenant',null,null,null,null,true,false,null,null,'Attempt unauthorized permission')$$,'42501',null,'delegated management category cannot grant unused permission');
 reset role;
+select set_config('sentriq.migration_runner','on',true);
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,can_read,granted_by,reason)
 values('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000004','view_all','allow','tenant',true,'90000000-0000-0000-0000-000000000002','Admin use authority within envelope');
+select set_config('sentriq.migration_runner','off',true);
 set local role authenticated;
 select api.set_member_permission_decision('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000006','view_all','allow','tenant',null,null,null,null,true,false,null,null,'Authorized delegated grant');
 reset role;

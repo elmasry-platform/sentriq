@@ -42,9 +42,11 @@ set local role authenticated;
 select api.publish_role_version('71000000-0000-0000-0000-000000000001','60000000-0000-0000-0000-000000007101','[{"permission_key":"view_all","scope_kind":"tenant","can_read":true,"can_write":false}]'::jsonb,'Restore role fixture');
 reset role;
 
+select set_config('sentriq.migration_runner','on',true);
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,can_read,granted_by,reason)
  values('71000000-0000-0000-0000-000000000001','72000000-0000-0000-0000-000000000002','view_all','allow','tenant',true,'70000000-0000-0000-0000-000000000002','Admin use authority within envelope'),
        ('71000000-0000-0000-0000-000000000001','72000000-0000-0000-0000-000000000002','hse.dashboard.read','allow','tenant',true,'70000000-0000-0000-0000-000000000002','Admin use authority for the short-window fixture');
+select set_config('sentriq.migration_runner','off',true);
 
 create temporary table restore_envs(k text primary key, id uuid not null) on commit drop;
 grant insert,select on table pg_temp.restore_envs to authenticated;
@@ -99,7 +101,9 @@ select extensions.ok((select not is_current and suspended_by_tenant from iam.mem
 select extensions.ok((select revoked_at is not null and revoke_reason='Source delegation suspended by company suspension' from iam.membership_roles where tenant_id='71000000-0000-0000-0000-000000000001' and membership_id='72000000-0000-0000-0000-000000000003'),'sourced role assignment is revoked and named as company-suspension takedown');
 select extensions.ok((select status='suspended' and suspended_by_tenant from iam.member_permission_decisions where id=(select id from restore_envs where k='dec2')),'short-window sourced decision is suspended and marked');
 update iam.delegation_envelopes set starts_at=now()-interval '30 minutes',ends_at=now()-interval '1 second' where id=(select id from restore_envs where k='D4');
+select set_config('sentriq.migration_runner','on',true);
 update iam.member_permission_decisions set starts_at=now()-interval '30 minutes',ends_at=now()-interval '1 second' where id=(select id from restore_envs where k='dec2');
+select set_config('sentriq.migration_runner','off',true);
 -- An engagement ending while the company is down is an independent cause.
 select set_config('request.jwt.claim.sub','70000000-0000-0000-0000-000000000002',true);
 update hse.person_engagements set status='ended',ends_at=now() where id='74000000-0000-0000-0000-000000000001';

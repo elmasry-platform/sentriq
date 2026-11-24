@@ -48,10 +48,12 @@ select extensions.throws_ok($$update hse.person_engagement_events set event_type
 select extensions.throws_ok($$update core.sites set org_unit_id=null where id='30000000-0000-0000-0000-00000000a101'$$,'23514',null,'D-20 guard rejects conflicting reassignment by a company actor');
 reset role;
 select extensions.throws_ok($$update core.sites set org_unit_id=null where id='30000000-0000-0000-0000-00000000a101'$$,'23514',null,'D-20 rejects Site reassignment conflicting with active engagement');
+select set_config('sentriq.migration_runner','on',true);
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,
  granted_by,reason)
  values('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaa101','10000000-0000-0000-0000-00000000a101','view_all','deny','tenant',
    '00000000-0000-0000-0000-000000000101','Phase 1 deny precedence test');
+select set_config('sentriq.migration_runner','off',true);
 set local role authenticated;
 select extensions.is((select count(*)::integer from hse.people),0,'explicit direct deny overrides Superadmin capability defaults');
 reset role;
