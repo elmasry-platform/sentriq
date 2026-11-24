@@ -121,8 +121,10 @@ select extensions.is((select e->>'entitlement_state' from jsonb_array_elements(a
 reset role;
 insert into core.entitlement_grants(tenant_id,feature_key,membership_id,starts_at,expires_at,granted_by,reason,billing_treatment)
 values('a1000000-0000-0000-0000-00000000000a','hse.copilot','a2000000-0000-0000-0000-000000000007',now()-interval '2 hours',now()-interval '1 hour','a0000000-0000-0000-0000-000000000001','Expired trial','platform_absorbed');
+select set_config('sentriq.migration_runner','on',true);
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,can_read,can_write,status,granted_by,reason)
 values('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000007','hse.copilot.use','allow','tenant',true,true,'active','a0000000-0000-0000-0000-000000000001','Trial use');
+select set_config('sentriq.migration_runner','off',true);
 select extensions.ok(not pg_temp.az('a0000000-0000-0000-0000-000000000007','a1000000-0000-0000-0000-00000000000a','hse.copilot.use')
  and not private.has_feature_entitlement('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000007','hse.copilot'),
  'T7 expired entitlement stops at authorize and at the entitlement helper');

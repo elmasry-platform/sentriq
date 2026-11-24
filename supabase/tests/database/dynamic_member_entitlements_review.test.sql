@@ -1,6 +1,6 @@
 -- Acceptance tests for dynamic member permissions and individual entitlement overrides.
 begin;
-select extensions.plan(25);
+select extensions.plan(35);
 create or replace function pg_temp.as_user(p_uid uuid) returns void language sql as $$
  select set_config('request.jwt.claim.sub',p_uid::text,true), set_config('request.jwt.claim.role','authenticated',true) $$;
 create or replace function pg_temp.az(p_uid uuid,p_tenant uuid,p_key text) returns boolean language plpgsql as $$
@@ -52,8 +52,10 @@ select extensions.ok(not pg_temp.az('a0000000-0000-0000-0000-000000000003','a100
   and not pg_temp.az('a0000000-0000-0000-0000-000000000005','a1000000-0000-0000-0000-00000000000a','hse.inspections.create'),'R1/R2 both operator Denies still enforce');
 -- specific_override vs tenant Deny
 reset role;
+select set_config('sentriq.migration_runner','on',true);
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,site_id,can_read,can_write,exception_kind,status,granted_by,reason)
 values('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000003','hse.forms.manage','allow','site','a3000000-0000-0000-0000-000000000001',true,true,'specific_override','active','a0000000-0000-0000-0000-000000000002','Override attempt');
+select set_config('sentriq.migration_runner','off',true);
 select pg_temp.as_user('a0000000-0000-0000-0000-000000000003');
 select extensions.ok(not api.authorize('a1000000-0000-0000-0000-00000000000a','hse.forms.manage','read','a3000000-0000-0000-0000-000000000001'),
  'R2 a specific_override cannot bypass an operator-origin tenant Deny (read)');
@@ -61,10 +63,14 @@ select extensions.ok(not api.authorize('a1000000-0000-0000-0000-00000000000a','h
  'R2 a specific_override cannot bypass an operator-origin tenant Deny (write)');
 -- control: an ordinary company Deny can still be overridden at a site by specific_override
 reset role;
+select set_config('sentriq.migration_runner','on',true);
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,can_read,can_write,status,granted_by,reason)
 values('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000002','hse.dashboard.read','deny','tenant',false,false,'active','a0000000-0000-0000-0000-000000000003','Company deny');
+select set_config('sentriq.migration_runner','off',true);
+select set_config('sentriq.migration_runner','on',true);
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,site_id,can_read,can_write,exception_kind,status,granted_by,reason)
 values('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000002','hse.dashboard.read','allow','site','a3000000-0000-0000-0000-000000000001',true,true,'specific_override','active','a0000000-0000-0000-0000-000000000003','Site override');
+select set_config('sentriq.migration_runner','off',true);
 select pg_temp.as_user('a0000000-0000-0000-0000-000000000002');
 select extensions.ok(api.authorize('a1000000-0000-0000-0000-00000000000a','hse.dashboard.read','read','a3000000-0000-0000-0000-000000000001')
   and not api.authorize('a1000000-0000-0000-0000-00000000000a','hse.dashboard.read','read'),
@@ -76,8 +82,10 @@ delete from iam.member_permission_decisions where membership_id='a2000000-0000-0
 select pg_temp.as_user('a0000000-0000-0000-0000-000000000003');
 insert into iam.delegation_envelopes(id,tenant_id,grantor_membership_id,delegate_membership_id,level,allowed_capabilities,status,created_by,revoked_at,revoked_by,revoke_reason)
 values('a4000000-0000-0000-0000-000000000001','a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000003','a2000000-0000-0000-0000-000000000004','tenant',array['direct_permission_decision'],'revoked','a0000000-0000-0000-0000-000000000003',now(),'a0000000-0000-0000-0000-000000000003','ended');
+select set_config('sentriq.migration_runner','on',true);
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,can_read,can_write,status,granted_by,reason,source_delegation_id)
 values('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000002','hse.dashboard.read','deny','tenant',false,false,'active','a0000000-0000-0000-0000-000000000004','Deny from an ended envelope','a4000000-0000-0000-0000-000000000001');
+select set_config('sentriq.migration_runner','off',true);
 select extensions.ok(not pg_temp.az('a0000000-0000-0000-0000-000000000002','a1000000-0000-0000-0000-00000000000a','hse.dashboard.read'),
  'R5 a Deny stays enforced after its delegation envelope ended');
 reset role;
@@ -135,6 +143,39 @@ select extensions.lives_ok($$select api.platform_set_member_decision('a1000000-0
 select extensions.lives_ok($$select api.platform_set_member_decision('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000005','hse.inspections.create','deny','Operator denies again')$$,'R12 the operator can set a Deny under the real role');
 reset role;
 select extensions.ok((select protected_origin from iam.member_permission_decisions where membership_id='a2000000-0000-0000-0000-000000000005' and permission_key='hse.inspections.create' and status='active'),'R12 operator Denies are marked protected');
+
+-- R13: an ordinary postgres session no longer skips the decision guards
+reset role;
+select pg_temp.as_user('a0000000-0000-0000-0000-000000000002');
+select extensions.throws_ok($$update iam.member_permission_decisions set status='revoked',revoked_at=now(),revoked_by='a0000000-0000-0000-0000-000000000002',revoke_reason='direct' where membership_id='a2000000-0000-0000-0000-000000000005' and permission_key='hse.inspections.create' and status='active'$$,'42501',null,'R13 a plain postgres session cannot revoke a protected Deny');
+select extensions.throws_ok($$insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,can_read,can_write,status,granted_by,reason,protected_origin) values('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000006','hse.forms.read','deny','tenant',false,false,'active','a0000000-0000-0000-0000-000000000002','forged protected row',true)$$,'42501',null,'R13 a plain postgres session cannot forge a protected row');
+-- R14: the RPC bodies refuse on their own, even if the triggers were bypassed
+select set_config('sentriq.migration_runner','on',true);
+select pg_temp.as_user('a0000000-0000-0000-0000-000000000002');
+select extensions.throws_ok($$select api.clear_member_permission_decision('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000005','hse.inspections.create','RPC body check')$$,'42501',null,'R14 clear RPC refuses a protected Deny with triggers bypassed');
+select extensions.throws_ok($$select api.set_member_permission_decision('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000005','hse.inspections.create','allow','tenant',null,null,null,null,true,true,null,null,'RPC body check')$$,'42501',null,'R14 set RPC refuses to replace a protected Deny with triggers bypassed');
+select pg_temp.as_user('a0000000-0000-0000-0000-000000000003');
+select extensions.throws_ok($$select api.clear_member_permission_decision('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000003','hse.forms.read','own membership')$$,'42501',null,'R14 clear RPC refuses the caller own membership');
+select extensions.throws_ok($$select api.set_member_permission_decision('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000003','hse.forms.read','deny','tenant',null,null,null,null,false,false,null,null,'own membership')$$,'22023',null,'R14 set RPC refuses the caller own membership (Superadmin target, refused before and after the new check)');
+select set_config('sentriq.migration_runner','off',true);
+
+-- R15: the Owner can clear a protected Deny on a suspended member and in a suspended company
+select set_config('sentriq.migration_runner','on',true);
+update iam.memberships set status='suspended' where id='a2000000-0000-0000-0000-000000000005';
+select set_config('sentriq.migration_runner','off',true);
+select pg_temp.as_user('a0000000-0000-0000-0000-000000000001');
+set local role authenticated;
+select extensions.lives_ok($$select api.platform_set_member_decision('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000005','hse.inspections.create','default','Clear for a suspended member')$$,'R15 the Owner can clear a protected Deny on a suspended member');
+select extensions.throws_ok($$select api.platform_set_member_decision('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000005','hse.inspections.create','deny','Set on a suspended member')$$,'22023',null,'R15 setting a new decision still needs an active member');
+reset role;
+select extensions.ok(not exists(select 1 from iam.member_permission_decisions where membership_id='a2000000-0000-0000-0000-000000000005' and permission_key='hse.inspections.create' and status='active'),'R15 the Deny is cleared');
+select set_config('sentriq.migration_runner','on',true);
+update core.tenants set status='suspended' where id='a1000000-0000-0000-0000-00000000000a';
+select set_config('sentriq.migration_runner','off',true);
+select pg_temp.as_user('a0000000-0000-0000-0000-000000000001');
+set local role authenticated;
+select extensions.lives_ok($$select api.platform_set_member_decision('a1000000-0000-0000-0000-00000000000a','a2000000-0000-0000-0000-000000000003','hse.forms.manage','default','Clear in a suspended company')$$,'R15 the Owner can clear a protected Deny in a suspended company');
+reset role;
 
 -- R11
 reset role;

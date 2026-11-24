@@ -189,10 +189,20 @@ begin
 end $$;
 revoke all on function private.operator_decision_actor() from public,anon,authenticated,service_role;
 
+-- The decision triggers used to skip every check for a plain postgres session. Now
+-- only a transaction that explicitly sets the migration-runner flag does so, and
+-- only as postgres with no role switched. Application connections never set it.
+create or replace function private.migration_runner_active() returns boolean
+language sql stable set search_path='' as $$
+ select session_user='postgres' and current_setting('role')='none'
+   and coalesce(current_setting('sentriq.migration_runner',true),'')='on'
+$$;
+revoke all on function private.migration_runner_active() from public,anon,authenticated,service_role;
+
 create or replace function private.guard_decision_authority() returns trigger
 language plpgsql security definer set search_path='' as $$
 begin
- if session_user='postgres' and current_setting('role')='none' then return new; end if;
+ if private.migration_runner_active() then return new; end if;
  if private.operator_decision_actor() is not null then return new; end if;
  if tg_op='INSERT' and new.protected_origin then
   raise exception 'protected_origin_requires_operator' using errcode='42501'; end if;
@@ -223,7 +233,7 @@ create or replace function private.capture_decision_source() returns trigger
 language plpgsql security definer set search_path='' as $$
 declare m iam.memberships%rowtype;
 begin
- if session_user='postgres' and current_setting('role')='none' then return new; end if;
+ if private.migration_runner_active() then return new; end if;
  if tg_op='INSERT' and new.decision='deny' and new.scope_kind='tenant'
   and pg_trigger_depth()>=2 and current_setting('sentriq.invitation_restriction_deny',true)='on'
   and new.reason like 'Superadmin invitation restriction:%' then return new; end if;
@@ -276,9 +286,12 @@ begin
   or (p_choice='allow' and not (coalesce(p_can_read,false) or coalesce(p_can_write,false))) then
   raise exception 'platform_member_decision_not_authorized' using errcode='42501';
  end if;
- select * into v_target from iam.memberships where tenant_id=p_tenant_id and id=p_membership_id and status='active';
+ -- Clearing (choice default) is always possible, including for a suspended member or
+ -- company, so an Owner can lift a restriction there. Setting needs an active target.
+ select * into v_target from iam.memberships where tenant_id=p_tenant_id and id=p_membership_id
+   and (status='active' or p_choice='default');
  if v_target.id is null or v_target.user_id=v_actor
-   or not exists(select 1 from core.tenants where id=p_tenant_id and status='active') then
+   or not exists(select 1 from core.tenants where id=p_tenant_id and (status='active' or p_choice='default')) then
   raise exception 'platform_member_decision_target_invalid' using errcode='22023'; end if;
  select * into c from iam.permission_catalog where permission_key=p_permission_key and enabled;
  if c.permission_key is null then raise exception 'permission_key_not_in_enabled_catalog' using errcode='22023'; end if;
@@ -948,6 +961,7 @@ create policy limit_migration_review_operator_read on iam.superadmin_limit_migra
 do $mig$
 declare l record; v_dec uuid; v_in_catalog boolean; v_member boolean;
 begin
+ perform set_config('sentriq.migration_runner','on',true);
  for l in select * from iam.superadmin_capability_limits order by updated_at,tenant_id,membership_id,capability_key loop
   v_in_catalog:=exists(select 1 from iam.permission_catalog where permission_key=l.capability_key and enabled);
   v_member:=exists(select 1 from iam.memberships where tenant_id=l.tenant_id and id=l.membership_id);
@@ -977,6 +991,7 @@ begin
           when not v_member then 'Membership no longer exists. Left for review.' else 'Missing setter. Left for review.' end,null);
   end if;
  end loop;
+ perform set_config('sentriq.migration_runner','off',true);
 end $mig$;
 
 -- ---------------------------------------------------------------------------
@@ -998,9 +1013,9 @@ grant execute on function api.platform_set_member_decision(uuid,uuid,text,text,t
 -- ---------------------------------------------------------------------------
 -- Review hardening
 -- ---------------------------------------------------------------------------
--- Must be applied as the postgres role (migration runner): the decision triggers
--- let session_user=postgres bypass their guards, and the data migration above
--- writes protected rows directly.
+-- Apply as the postgres role (migration runner). The data migration above sets the
+-- transaction-local migration-runner flag itself; no other session bypasses the
+-- decision triggers.
 
 -- Legacy platform grant RPCs: membership-scoped rows are Operation A/B territory.
 -- They require member.entitlements, refuse self-targets, and a personal
@@ -1256,6 +1271,100 @@ begin
  insert into audit.events(tenant_id,actor_user_id,actor_membership_id,scope_kind,action_key,record_type,record_id,summary)
   values(p_tenant_id,v_actor,v_grantor,p_level,'iam.delegation.created','iam.delegation_envelopes',v_id,
    jsonb_build_object('delegate_membership_id',p_delegate_membership_id,'capabilities',p_allowed_capabilities,'reason',btrim(p_reason)));
+ return v_id;
+end $function$;
+
+-- RPC-body checks (not trigger-only): own membership and operator-origin rows.
+CREATE OR REPLACE FUNCTION api.clear_member_permission_decision(p_tenant_id uuid, p_membership_id uuid, p_permission_key text, p_reason text)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+declare v_actor uuid := private.request_actor_id(); v_count int;
+begin
+ if v_actor is null
+    or p_reason is null or length(btrim(p_reason)) not between 3 and 500
+    or not exists(select 1 from iam.memberships t where t.tenant_id=p_tenant_id and t.id=p_membership_id)
+    or not private.phase1_can_manage(p_tenant_id,'direct_permission_decision',p_membership_id) then
+   raise exception 'direct_permission_clear_not_allowed' using errcode='42501';
+ end if;
+
+ if exists(select 1 from iam.memberships own where own.tenant_id=p_tenant_id and own.id=p_membership_id and own.user_id=v_actor) then
+   raise exception 'own_membership_decision_not_allowed' using errcode='42501'; end if;
+ if exists(select 1 from iam.member_permission_decisions pd where pd.tenant_id=p_tenant_id and pd.membership_id=p_membership_id
+    and pd.permission_key=p_permission_key and pd.status='active' and pd.protected_origin) then
+   raise exception 'operator_decision_requires_operator' using errcode='42501'; end if;
+ perform pg_advisory_xact_lock(hashtextextended('sentriq-decision:'||p_tenant_id::text||':'||p_membership_id::text||':'||p_permission_key,0));
+ update iam.member_permission_decisions d
+    set status='revoked', revoked_at=now(), revoked_by=v_actor, revoke_reason=btrim(p_reason)
+  where d.tenant_id=p_tenant_id and d.membership_id=p_membership_id
+    and d.permission_key=p_permission_key and d.scope_kind='tenant' and d.status='active';
+ get diagnostics v_count = row_count;
+ insert into audit.events(tenant_id,actor_user_id,scope_kind,action_key,record_type,record_id,summary)
+ values(p_tenant_id,v_actor,'tenant','iam.permission_decision.cleared','iam.member_permission_decisions',p_membership_id,
+        jsonb_build_object('permission_key',p_permission_key,'cleared',v_count,'reason',btrim(p_reason)));
+end $function$;
+
+CREATE OR REPLACE FUNCTION api.set_member_permission_decision(p_tenant_id uuid, p_membership_id uuid, p_permission_key text, p_decision text, p_scope_kind text, p_site_id uuid, p_org_unit_id uuid, p_task_kind text, p_task_id uuid, p_can_read boolean, p_can_write boolean, p_ends_at timestamp with time zone, p_exception_kind text, p_reason text)
+ RETURNS uuid
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+declare v_actor uuid:=private.request_actor_id(); v_actor_membership uuid; v_id uuid; v_target iam.memberships%rowtype;
+        v_feature text;
+begin
+ select m.id into v_actor_membership from iam.memberships m join core.tenants t on t.id=m.tenant_id
+  where m.tenant_id=p_tenant_id and m.user_id=v_actor and m.status='active' and t.status='active';
+ select * into v_target from iam.memberships where tenant_id=p_tenant_id and id=p_membership_id;
+ if v_actor is null or v_actor_membership is null or v_target.id is null or v_target.status<>'active'
+   or v_target.member_role='company_superadmin'
+   or p_can_read is null or p_can_write is null
+   or p_reason is null or length(btrim(p_reason)) not between 3 and 500
+   or p_decision not in ('allow','deny') or p_scope_kind not in ('tenant','site','org_unit','assigned_task')
+   or (p_scope_kind='site') is distinct from (p_site_id is not null)
+   or (p_scope_kind='org_unit') is distinct from (p_org_unit_id is not null)
+   or (p_scope_kind='assigned_task') is distinct from (p_task_id is not null and p_task_kind is not null)
+   or (p_decision='deny' and (p_can_read or p_can_write or p_exception_kind is not null))
+   or (p_decision='allow' and not (p_can_read or p_can_write))
+   or (p_exception_kind is not null and (p_decision<>'allow' or p_exception_kind<>'specific_override')) then
+   raise exception 'direct_permission_decision_invalid' using errcode='22023';
+ end if;
+ if not private.phase1_can_manage(p_tenant_id,'direct_permission_decision',p_membership_id,p_site_id,p_org_unit_id)
+   or (p_exception_kind='specific_override' and not private.phase1_can_manage(p_tenant_id,'permissions.specific_override',p_membership_id,p_site_id,p_org_unit_id)) then
+   raise exception 'direct_permission_decision_not_delegated' using errcode='42501';
+ end if;
+ select feature_key into v_feature from iam.permission_catalog where permission_key=p_permission_key and enabled;
+ if not found then raise exception 'permission_key_not_in_enabled_catalog' using errcode='22023'; end if;
+ if p_decision='allow' and v_feature is not null and not private.has_feature_entitlement(p_tenant_id,v_actor_membership,v_feature) then
+   raise exception 'permission_feature_not_enabled' using errcode='42501';
+ end if;
+ if p_scope_kind='assigned_task' and not exists(select 1 from iam.task_assignments ta where ta.tenant_id=p_tenant_id
+   and ta.membership_id=p_membership_id and ta.task_kind=p_task_kind and ta.task_id=p_task_id and ta.active) then
+   raise exception 'task_scope_requires_active_assignment' using errcode='23503';
+ end if;
+
+ if exists(select 1 from iam.memberships own where own.tenant_id=p_tenant_id and own.id=p_membership_id and own.user_id=v_actor) then
+   raise exception 'own_membership_decision_not_allowed' using errcode='42501'; end if;
+ if exists(select 1 from iam.member_permission_decisions pd where pd.tenant_id=p_tenant_id and pd.membership_id=p_membership_id
+    and pd.permission_key=p_permission_key and pd.status='active' and pd.protected_origin) then
+   raise exception 'operator_decision_requires_operator' using errcode='42501'; end if;
+ perform pg_advisory_xact_lock(hashtextextended('sentriq-decision:'||p_tenant_id::text||':'||p_membership_id::text||':'||p_permission_key,0));
+ update iam.member_permission_decisions d set status='revoked',revoked_at=now(),revoked_by=v_actor,
+   revoke_reason='Replaced by a new authorized decision'
+ where d.tenant_id=p_tenant_id and d.membership_id=p_membership_id and d.permission_key=p_permission_key
+   and d.scope_kind=p_scope_kind and d.site_id is not distinct from p_site_id
+   and d.org_unit_id is not distinct from p_org_unit_id and d.task_kind is not distinct from p_task_kind
+   and d.task_id is not distinct from p_task_id and d.status='active';
+ insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,site_id,org_unit_id,
+   task_kind,task_id,can_read,can_write,exception_kind,status,granted_by,ends_at,reason)
+ values(p_tenant_id,p_membership_id,p_permission_key,p_decision,p_scope_kind,p_site_id,p_org_unit_id,p_task_kind,p_task_id,
+   case when p_decision='deny' then false else p_can_read end,case when p_decision='deny' then false else p_can_write end,
+   p_exception_kind,'active',v_actor,p_ends_at,btrim(p_reason)) returning id into v_id;
+ insert into audit.events(tenant_id,actor_user_id,actor_membership_id,scope_kind,action_key,record_type,record_id,summary)
+  values(p_tenant_id,v_actor,v_actor_membership,p_scope_kind,'iam.permission_decision.set','iam.member_permission_decisions',v_id,
+   jsonb_build_object('target_membership_id',p_membership_id,'permission_key',p_permission_key,'decision',p_decision,'reason',btrim(p_reason)));
  return v_id;
 end $function$;
 

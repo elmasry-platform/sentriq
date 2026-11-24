@@ -74,15 +74,21 @@ select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000105'
 select extensions.is(private.phase1_permission_allowed('cccccccc-cccc-cccc-cccc-ccccccccca01','view_all',null,null,false),false,'legacy permission rows do not authorize an unversioned assignment');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000104',true);
 reset role;
+select set_config('sentriq.migration_runner','on',true);
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,granted_by,reason)
  values('cccccccc-cccc-cccc-cccc-ccccccccca01','10000000-0000-0000-0000-00000000c104','view_all','deny','tenant','00000000-0000-0000-0000-000000000104','Override binding test deny');
+select set_config('sentriq.migration_runner','off',true);
+select set_config('sentriq.migration_runner','on',true);
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,site_id,can_read,exception_kind,granted_by,reason)
  values('cccccccc-cccc-cccc-cccc-ccccccccca01','10000000-0000-0000-0000-00000000c104','view_all','allow','site','30000000-0000-0000-0000-00000000c102',true,'specific_override','00000000-0000-0000-0000-000000000104','Unrelated override scope');
+select set_config('sentriq.migration_runner','off',true);
 set local role authenticated;
 select extensions.ok(not private.phase1_permission_allowed('cccccccc-cccc-cccc-cccc-ccccccccca01','view_all','30000000-0000-0000-0000-00000000c101','20000000-0000-0000-0000-00000000c101',false),'unrelated-site override cannot bypass a tenant deny');
 reset role;
+select set_config('sentriq.migration_runner','on',true);
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,site_id,can_read,exception_kind,granted_by,reason)
  values('cccccccc-cccc-cccc-cccc-ccccccccca01','10000000-0000-0000-0000-00000000c104','view_all','allow','site','30000000-0000-0000-0000-00000000c101',true,'specific_override','00000000-0000-0000-0000-000000000104','Exact narrower site override');
+select set_config('sentriq.migration_runner','off',true);
 set local role authenticated;
 select extensions.ok(private.phase1_permission_allowed('cccccccc-cccc-cccc-cccc-ccccccccca01','view_all','30000000-0000-0000-0000-00000000c101','20000000-0000-0000-0000-00000000c101',false),'specific override can narrow a tenant deny to its exact site');
 reset role;

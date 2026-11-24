@@ -42,9 +42,11 @@ set local role authenticated;
 select api.publish_role_version('71000000-0000-0000-0000-000000000001','60000000-0000-0000-0000-000000007101','[{"permission_key":"view_all","scope_kind":"tenant","can_read":true,"can_write":false}]'::jsonb,'Restore role fixture');
 reset role;
 
+select set_config('sentriq.migration_runner','on',true);
 insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,can_read,granted_by,reason)
  values('71000000-0000-0000-0000-000000000001','72000000-0000-0000-0000-000000000002','view_all','allow','tenant',true,'70000000-0000-0000-0000-000000000002','Admin use authority within envelope'),
        ('71000000-0000-0000-0000-000000000001','72000000-0000-0000-0000-000000000002','hse.dashboard.read','allow','tenant',true,'70000000-0000-0000-0000-000000000002','Admin use authority for the short-window fixture');
+select set_config('sentriq.migration_runner','off',true);
 
 create temporary table restore_envs(k text primary key, id uuid not null) on commit drop;
 grant insert,select on table pg_temp.restore_envs to authenticated;
