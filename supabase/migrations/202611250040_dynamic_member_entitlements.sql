@@ -199,6 +199,25 @@ language sql stable set search_path='' as $$
 $$;
 revoke all on function private.migration_runner_active() from public,anon,authenticated,service_role;
 
+-- Owner-of-the-decision rule. A Deny is locked against p_actor when
+--  - it is operator-origin (protected_origin), or
+--  - its setter was a company Superadmin (or the setter's membership is gone or not
+--    active) and p_actor is not that setter, or the setter is no longer active.
+-- A locked Deny can only be removed or replaced through the platform operator RPC
+-- (Owner, or a Subowner holding member.permissions). A Deny set by an active
+-- non-Superadmin delegate keeps the older rule (the setter or a company Superadmin).
+create or replace function private.deny_locked_for(p_decision_id uuid, p_actor uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+ select coalesce((select d.protected_origin
+     or ((sm.id is null or sm.member_role='company_superadmin' or sm.status<>'active')
+         and (sm.id is null or sm.status<>'active' or d.granted_by is distinct from p_actor))
+   from iam.member_permission_decisions d
+   left join lateral (select m.id,m.member_role,m.status from iam.memberships m
+      where m.tenant_id=d.tenant_id and m.user_id=d.granted_by limit 1) sm on true
+   where d.id=p_decision_id and d.decision='deny' and d.status='active'),false)
+$$;
+revoke all on function private.deny_locked_for(uuid,uuid) from public,anon,authenticated,service_role;
+
 create or replace function private.guard_decision_authority() returns trigger
 language plpgsql security definer set search_path='' as $$
 begin
@@ -222,6 +241,8 @@ begin
    if exists(select 1 from iam.memberships m where m.tenant_id=old.tenant_id and m.id=old.membership_id
         and m.user_id=private.request_actor_id()) then
     raise exception 'own_restriction_cannot_be_cleared' using errcode='42501'; end if;
+   if private.deny_locked_for(old.id,private.request_actor_id()) then
+    raise exception 'deny_removal_requires_setter_subowner_or_owner' using errcode='42501'; end if;
    if old.granted_by is distinct from private.request_actor_id() and not private.can_manage_tenant(old.tenant_id) then
     raise exception 'deny_removal_requires_creator_or_superadmin' using errcode='42501'; end if;
   end if;
@@ -598,7 +619,13 @@ begin
    and d.permission_key=p_permission_key and d.decision='deny' and d.status='active'
    and d.starts_at<=now() and (d.ends_at is null or now()<d.ends_at)
    and private.scope_matches(d.scope_kind,d.site_id,d.org_unit_id,d.task_kind,d.task_id,p_site_id,p_org_unit_id,p_task_kind,p_task_id)
-   and not (d.scope_kind='tenant' and not coalesce(d.protected_origin,false) and private.valid_specific_override(p_tenant_id,m.id,p_permission_key,p_site_id,p_org_unit_id,p_task_kind,p_task_id))) then return false; end if;
+   and not (d.scope_kind='tenant' and not coalesce(d.protected_origin,false) and exists(select 1 from iam.member_permission_decisions o
+     where o.tenant_id=p_tenant_id and o.membership_id=m.id and o.permission_key=p_permission_key and o.decision='allow'
+       and o.exception_kind='specific_override' and o.status='active' and o.starts_at<=now() and (o.ends_at is null or now()<o.ends_at)
+       and private.decision_source_valid(o.source_delegation_id,o.tenant_id)
+       and o.scope_kind in ('site','org_unit','assigned_task')
+       and private.scope_matches(o.scope_kind,o.site_id,o.org_unit_id,o.task_kind,o.task_id,p_site_id,p_org_unit_id,p_task_kind,p_task_id)
+       and (o.protected_origin or not private.deny_locked_for(d.id,o.granted_by))))) then return false; end if;
  if exists(select 1 from iam.permission_action_grants d where d.tenant_id=p_tenant_id and d.membership_id=m.id
    and d.permission_key=p_permission_key and d.action_key=p_action and d.decision='deny' and d.status='active'
    and d.starts_at<=now() and (d.ends_at is null or now()<d.ends_at)
@@ -684,6 +711,7 @@ AS $function$
        and o.status='active' and o.starts_at<=now() and (o.ends_at is null or now()<o.ends_at)
        and (case when p_write then o.can_write else o.can_read or o.can_write end)
        and private.decision_source_valid(o.source_delegation_id,o.tenant_id)
+       and (o.protected_origin or not private.deny_locked_for(d.id,o.granted_by))
        and d.scope_kind='tenant' and o.scope_kind in ('site','org_unit','assigned_task')
        and (o.scope_kind<>'site' or o.site_id=p_site_id)
        and (o.scope_kind<>'org_unit' or o.org_unit_id=p_org_unit_id)
@@ -1295,6 +1323,9 @@ begin
  if exists(select 1 from iam.member_permission_decisions pd where pd.tenant_id=p_tenant_id and pd.membership_id=p_membership_id
     and pd.permission_key=p_permission_key and pd.status='active' and pd.protected_origin) then
    raise exception 'operator_decision_requires_operator' using errcode='42501'; end if;
+ if exists(select 1 from iam.member_permission_decisions ld where ld.tenant_id=p_tenant_id and ld.membership_id=p_membership_id
+    and ld.permission_key=p_permission_key and ld.scope_kind='tenant' and private.deny_locked_for(ld.id,v_actor)) then
+   raise exception 'deny_removal_requires_setter_subowner_or_owner' using errcode='42501'; end if;
  perform pg_advisory_xact_lock(hashtextextended('sentriq-decision:'||p_tenant_id::text||':'||p_membership_id::text||':'||p_permission_key,0));
  update iam.member_permission_decisions d
     set status='revoked', revoked_at=now(), revoked_by=v_actor, revoke_reason=btrim(p_reason)
@@ -1350,6 +1381,11 @@ begin
  if exists(select 1 from iam.member_permission_decisions pd where pd.tenant_id=p_tenant_id and pd.membership_id=p_membership_id
     and pd.permission_key=p_permission_key and pd.status='active' and pd.protected_origin) then
    raise exception 'operator_decision_requires_operator' using errcode='42501'; end if;
+ if exists(select 1 from iam.member_permission_decisions ld where ld.tenant_id=p_tenant_id and ld.membership_id=p_membership_id
+    and ld.permission_key=p_permission_key and ld.scope_kind=p_scope_kind and ld.site_id is not distinct from p_site_id
+    and ld.org_unit_id is not distinct from p_org_unit_id and ld.task_kind is not distinct from p_task_kind
+    and ld.task_id is not distinct from p_task_id and private.deny_locked_for(ld.id,v_actor)) then
+   raise exception 'deny_removal_requires_setter_subowner_or_owner' using errcode='42501'; end if;
  perform pg_advisory_xact_lock(hashtextextended('sentriq-decision:'||p_tenant_id::text||':'||p_membership_id::text||':'||p_permission_key,0));
  update iam.member_permission_decisions d set status='revoked',revoked_at=now(),revoked_by=v_actor,
    revoke_reason='Replaced by a new authorized decision'
