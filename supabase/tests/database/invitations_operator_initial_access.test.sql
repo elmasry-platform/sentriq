@@ -1,5 +1,5 @@
 begin;
-select extensions.plan(24);
+select extensions.plan(37);
 create temporary table inv(name text,invitation_id uuid,token text) on commit drop;
 grant insert,select on table pg_temp.inv to authenticated;
 
@@ -12,7 +12,9 @@ insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,r
  ('00000000-0000-0000-0000-000000000513','authenticated','authenticated','new-c@example.test','',now(),'{}','{}',now(),now()),
  ('00000000-0000-0000-0000-000000000514','authenticated','authenticated','new-d@example.test','',now(),'{}','{}',now(),now()),
  ('00000000-0000-0000-0000-000000000515','authenticated','authenticated','stranger@example.test','',now(),'{}','{}',now(),now()),
- ('00000000-0000-0000-0000-000000000516','authenticated','authenticated','empty-sa@example.test','',now(),'{}','{}',now(),now());
+ ('00000000-0000-0000-0000-000000000516','authenticated','authenticated','empty-sa@example.test','',now(),'{}','{}',now(),now()),
+ ('00000000-0000-0000-0000-000000000517','authenticated','authenticated','exp@example.test','',now(),'{}','{}',now(),now()),
+ ('00000000-0000-0000-0000-000000000518','authenticated','authenticated','svc@example.test','',now(),'{}','{}',now(),now());
 select private.bootstrap_platform_owner('00000000-0000-0000-0000-000000000501');
 insert into iam.platform_operators(user_id,operator_role,created_by)
  values('00000000-0000-0000-0000-000000000503','subowner','00000000-0000-0000-0000-000000000501');
@@ -70,5 +72,58 @@ select extensions.is((select display_name from iam.memberships where user_id='00
 select extensions.is((select string_agg(permission_key||':'||decision||':'||protected_origin::text,',' order by permission_key) from iam.member_permission_decisions d join iam.memberships m on m.id=d.membership_id where m.user_id='00000000-0000-0000-0000-000000000511' and d.status='active'),'hse.forms.manage:allow:false,hse.forms.read:deny:false','A7 company initial access is applied as ordinary decisions granted by the Superadmin');
 select extensions.is((select string_agg(permission_key||':'||decision||':'||protected_origin::text,',' order by permission_key) from iam.member_permission_decisions d join iam.memberships m on m.id=d.membership_id where m.user_id='00000000-0000-0000-0000-000000000512' and d.status='active'),'hse.audit.read:deny:true,hse.forms.read:allow:true','A8 operator initial access is applied as protected operator decisions');
 select extensions.is((select count(*)::int from audit.events where action_key='iam.invitation.initial_access.applied'),2,'A9 applying initial access is audited');
+
+-- Review hardening
+reset role;
+insert into iam.superadmin_capability_limits(tenant_id,membership_id,capability_key,can_use,can_delegate,set_by,reason)
+ values('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','10000000-0000-0000-0000-0000000e0502','hse.findings.read',true,false,'00000000-0000-0000-0000-000000000501','limit test');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000502',true);
+set local role authenticated;
+select extensions.throws_ok($$select * from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','lim@example.test','employee',interval '7 days','L','[{"permission_key":"hse.findings.read","decision":"deny"}]'::jsonb,'reason ok')$$,'42501',null,'H1 a per-permission Superadmin limit blocks initial access (Deny too)');
+reset role;
+delete from iam.superadmin_capability_limits where capability_key='hse.findings.read';
+set local role authenticated;
+select extensions.throws_ok($$select * from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','nm@example.test','employee',interval '7 days','N','[{"permission_key":"core.structure.manage","decision":"allow"}]'::jsonb,'reason ok')$$,'42501',null,'H2 Allow on a module the company does not have is refused at creation');
+reset role;
+create temporary table dec_before as select count(*)::int c from iam.member_permission_decisions;
+set local role authenticated;
+select extensions.lives_ok($$insert into inv select 'd',* from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','new-d@example.test','employee',interval '7 days','Dina Example','[{"permission_key":"hse.forms.read","decision":"deny"},{"permission_key":"hse.forms.manage","decision":"allow"}]'::jsonb,'Starter access')$$,'H3 create an invitation, then lose the inviter before it is accepted');
+reset role;
+select extensions.is((select count(*)::int from iam.member_permission_decisions),(select c from dec_before),'H4 nothing is written before acceptance');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000501',true);
+set local role authenticated;
+select api.platform_set_membership_status('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','10000000-0000-0000-0000-0000000e0502','suspended','inviter leaves');
+reset role;
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000514',true);
+set local role authenticated;
+select extensions.lives_ok($$select api.accept_my_invitation((select token from inv where name='d'))$$,'H5 the invitation is still accepted');
+reset role;
+select extensions.is((select string_agg(permission_key||':'||decision,',') from iam.member_permission_decisions d join iam.memberships m on m.id=d.membership_id where m.user_id='00000000-0000-0000-0000-000000000514' and d.status='active'),'hse.forms.read:deny','H6 inviter gone: Deny applied, Allow skipped');
+select extensions.ok((select (summary->'skipped'->0->>'why')='inviter_no_longer_authorised' and (summary->>'applied')::int=1 from audit.events where action_key='iam.invitation.initial_access.applied' and summary->>'invitation_id'=(select invitation_id::text from inv where name='d')),'H7 the audit row records applied and skipped keys with the reason');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000501',true);
+set local role authenticated;
+select api.platform_set_membership_status('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','10000000-0000-0000-0000-0000000e0502','active','inviter back');
+reset role;
+-- expired invitation
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000502',true);
+set local role authenticated;
+select extensions.lives_ok($$insert into inv select 'e',* from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','exp@example.test','employee')$$,'H8 create an invitation to expire');
+reset role;
+update iam.invitations set created_at=now()-interval '2 days',expires_at=now()-interval '1 day' where email='exp@example.test';
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000517',true);
+set local role authenticated;
+select extensions.throws_ok($$select api.accept_my_invitation((select token from inv where name='e'))$$,'22023',null,'H9 an expired invitation cannot be accepted');
+-- service-role regression
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000502',true);
+insert into inv select 'f',* from api.create_company_invitation('eeeeeeee-eeee-eeee-eeee-eeeeeeee0a01','svc@example.test','employee');
+select set_config('t.tok',(select token from inv where name='f'),true);
+reset role;
+select set_config('request.jwt.claim.role','service_role',true);
+set local role service_role;
+select extensions.lives_ok($$select api.accept_invitation(current_setting('t.tok'),'00000000-0000-0000-0000-000000000518')$$,'H10 the service-role accept path still works');
+reset role;
+select extensions.throws_ok($$select private.normalize_invitation_decisions('{"a":1}'::jsonb)$$,'22023',null,'H11 non-array decisions are rejected');
+select extensions.throws_ok($$select private.normalize_invitation_decisions('[{"permission_key":"hse.forms.read","decision":"deny"},{"permission_key":"hse.forms.read","decision":"allow"}]'::jsonb)$$,'22023',null,'H12 duplicate keys are rejected');
+select extensions.throws_ok($$select private.normalize_invitation_decisions((select jsonb_agg(jsonb_build_object('permission_key','hse.forms.read','decision','deny')) from generate_series(1,101)))$$,'22023',null,'H13 more than 100 entries are rejected');
 select * from extensions.finish();
 rollback;

@@ -18,6 +18,8 @@
 --        change them afterwards), Allow is still checked against the member's entitlement.
 --    The inviter's authority is re-checked at acceptance: if it is gone, Allows are
 --    skipped and only Denies (which only restrict) are applied; both outcomes are audited.
+--    The decisions are written by the AFTER UPDATE OF accepted_at trigger on iam.invitations
+--    (private.apply_invitation_initial_access), which runs after the membership exists.
 --  * Adds api.accept_my_invitation(token) for a signed-in user (verified email must match),
 --    so no service-role key is needed. api.accept_invitation stays service_role only.
 --  * Adds api.list_invitations (never returns token hashes) and lets operators revoke.
@@ -52,6 +54,13 @@ begin
  return v;
 end $$;
 
+-- Superadmin power limits (iam.superadmin_capability_limits) block a capability or a single
+-- permission key when the Superadmin may not use or may not delegate it.
+create or replace function private.superadmin_limited(p_tenant_id uuid,p_membership_id uuid,p_key text)
+returns boolean language sql stable security definer set search_path='' as $$
+ select exists(select 1 from iam.superadmin_capability_limits l where l.tenant_id=p_tenant_id and l.membership_id=p_membership_id
+   and l.capability_key=p_key and (not l.can_use or not l.can_delegate)) $$;
+
 -- Shared insert: duplicate and pending checks, token, row. Callers authorise first.
 create or replace function private.insert_invitation(p_tenant_id uuid,p_email text,p_name text,p_level text,p_ttl interval,
   p_decisions jsonb,p_reason text,p_origin text,p_actor uuid)
@@ -61,8 +70,11 @@ begin
  perform pg_advisory_xact_lock(hashtextextended('sentriq-invitation:'||p_tenant_id::text||':'||v_email,0));
  if exists(select 1 from iam.memberships m where m.tenant_id=p_tenant_id and m.email=v_email and m.status='active') then
    raise exception 'active_membership_already_exists' using errcode='23505'; end if;
- update iam.invitations set revoked_at=now(),revoked_by=p_actor,revoke_reason='Expired before reinvitation'
-  where tenant_id=p_tenant_id and email=v_email and accepted_at is null and revoked_at is null and expires_at<=now();
+
+ with gone as (update iam.invitations set revoked_at=now(),revoked_by=p_actor,revoke_reason='Expired before reinvitation'
+  where tenant_id=p_tenant_id and email=v_email and accepted_at is null and revoked_at is null and expires_at<=now() returning id)
+ insert into audit.events(tenant_id,actor_user_id,scope_kind,action_key,record_type,record_id,summary)
+  select p_tenant_id,p_actor,'tenant','iam.invitation.revoked','iam.invitations',gone.id,jsonb_build_object('reason','Expired before reinvitation','automatic',true) from gone;
  if exists(select 1 from iam.invitations where tenant_id=p_tenant_id and email=v_email and accepted_at is null and revoked_at is null) then
    raise exception 'invitation_already_pending' using errcode='23505'; end if;
  insert into iam.invitations(tenant_id,email,token_hash,intended_level,invited_by,expires_at,invitee_name,initial_decisions,decision_reason,origin)
@@ -95,6 +107,9 @@ begin
      raise exception 'invitation_reason_required' using errcode='22023'; end if;
    if not private.phase1_can_manage(p_tenant_id,'direct_permission_decision') then
      raise exception 'direct_permission_decision_not_delegated' using errcode='42501'; end if;
+   if exists(select 1 from jsonb_to_recordset(v_dec) x(permission_key text,decision text)
+       where private.superadmin_limited(p_tenant_id,v_member,x.permission_key)) then
+     raise exception 'permission_limited_for_inviter' using errcode='42501'; end if;
    -- A Superadmin can only Allow what they hold themselves, and never create an exception.
    if exists(select 1 from jsonb_to_recordset(v_dec) x(permission_key text,decision text)
        join iam.permission_catalog pc on pc.permission_key=x.permission_key
@@ -120,6 +135,8 @@ begin
    raise exception 'platform_invitation_not_allowed' using errcode='42501';
  end if;
  v_dec:=private.normalize_invitation_decisions(coalesce(p_decisions,'[]'::jsonb));
+ if jsonb_array_length(v_dec)>0 and not private.platform_permission_allowed('member.permissions') then
+   raise exception 'platform_invitation_not_allowed' using errcode='42501'; end if;
  -- Superadmin power limits use their own mechanism (create_company_superadmin_invitation).
  if p_level='company_superadmin' and jsonb_array_length(v_dec)>0 then
    raise exception 'superadmin_initial_decisions_not_supported' using errcode='22023'; end if;
@@ -133,6 +150,8 @@ begin
  if private.operator_decision_actor() is not null then return new; end if;
  if tg_op='INSERT' and pg_trigger_depth()>=2 and current_setting('sentriq.invitation_initial_decision',true)='on'
   and new.scope_kind='tenant' and new.reason like 'Invitation initial access:%' then return new; end if;
+ if tg_op='UPDATE' and pg_trigger_depth()>=2 and current_setting('sentriq.invitation_initial_decision',true)='on'
+  and new.status='revoked' and new.revoke_reason like 'Replaced by invitation initial access:%' then return new; end if;
  if tg_op='INSERT' and new.protected_origin then
   raise exception 'protected_origin_requires_operator' using errcode='42501'; end if;
  if tg_op='INSERT' and new.decision='deny' and new.scope_kind='tenant'
@@ -235,29 +254,49 @@ begin
  return private.accept_invitation_core(p_token,auth.uid());
 end $$;
 
--- Initial access is applied by the existing accepted_at trigger, after the membership exists.
+-- Initial access is applied by an AFTER UPDATE OF accepted_at trigger, after the membership exists.
 create or replace function private.apply_invitation_initial_access() returns trigger language plpgsql security definer set search_path='' as $$
-declare v_membership uuid; v_ok boolean; v_applied int:=0; v_skipped jsonb:='[]'::jsonb; x record; pc iam.permission_catalog%rowtype; v_ent boolean;
+declare v_membership uuid; v_inviter uuid; v_ok boolean; v_applied int:=0; v_skipped jsonb:='[]'::jsonb; x record; pc iam.permission_catalog%rowtype;
+        v_why text; v_old iam.member_permission_decisions%rowtype;
 begin
  if new.accepted_at is null or old.accepted_at is not null or jsonb_array_length(new.initial_decisions)=0
     or new.intended_level='company_superadmin' then return new; end if;
  select m.id into v_membership from iam.memberships m where m.tenant_id=new.tenant_id and m.user_id=new.accepted_by and m.status='active';
- -- Is the inviter still authorised to Allow? (Deny only restricts, so it stays valid.)
+ select i.id into v_inviter from iam.memberships i join core.tenants t on t.id=i.tenant_id where i.tenant_id=new.tenant_id and i.user_id=new.invited_by
+   and i.member_role='company_superadmin' and i.status='active' and t.status='active';
+ -- Is the inviter still authorised at acceptance? Operator: still an active operator with member.permissions.
+ -- Company: still an active Superadmin with the decision capability. Deny only restricts, so authority gates Allow;
+ -- per-permission limits gate both.
  v_ok:=case when new.origin='platform' then exists(select 1 from iam.platform_operators o where o.user_id=new.invited_by and o.active
           and private.platform_permission_allowed('member.permissions',new.invited_by))
-        else exists(select 1 from iam.memberships i join core.tenants t on t.id=i.tenant_id where i.tenant_id=new.tenant_id and i.user_id=new.invited_by
-          and i.member_role='company_superadmin' and i.status='active' and t.status='active') end;
+        else v_inviter is not null and not private.superadmin_limited(new.tenant_id,v_inviter,'direct_permission_decision') end;
  perform set_config('sentriq.invitation_initial_decision','on',true);
  for x in select * from jsonb_to_recordset(new.initial_decisions) d(permission_key text,decision text) loop
+   v_why:=null;
    select * into pc from iam.permission_catalog where permission_key=x.permission_key and enabled;
-   if pc.permission_key is null then v_skipped:=v_skipped||jsonb_build_array(jsonb_build_object('permission_key',x.permission_key,'why','not_in_catalog')); continue; end if;
-   if x.decision='allow' then
-     v_ent:=private.has_member_module_entitlement(new.tenant_id,v_membership,pc.module_key)
-        and (pc.feature_key is null or private.has_feature_entitlement(new.tenant_id,v_membership,pc.feature_key));
-     if not v_ok or not v_ent then
-       v_skipped:=v_skipped||jsonb_build_array(jsonb_build_object('permission_key',x.permission_key,'why',case when not v_ok then 'inviter_no_longer_authorised' else 'not_entitled' end));
-       continue;
+   if pc.permission_key is null then v_why:='not_in_catalog';
+   elsif new.origin='company' and v_inviter is not null and private.superadmin_limited(new.tenant_id,v_inviter,x.permission_key) then v_why:='inviter_limited';
+   elsif x.decision='allow' and not v_ok then v_why:='inviter_no_longer_authorised';
+   elsif x.decision='allow' and not (private.has_member_module_entitlement(new.tenant_id,v_membership,pc.module_key)
+        and (pc.feature_key is null or private.has_feature_entitlement(new.tenant_id,v_membership,pc.feature_key))) then v_why:='not_entitled';
+   elsif x.decision='allow' and new.origin='company' and not (private.has_member_module_entitlement(new.tenant_id,v_inviter,pc.module_key)
+        and (pc.feature_key is null or private.has_feature_entitlement(new.tenant_id,v_inviter,pc.feature_key))) then v_why:='inviter_not_entitled';
+   end if;
+   if v_why is null then
+     select * into v_old from iam.member_permission_decisions d where d.tenant_id=new.tenant_id and d.membership_id=v_membership
+       and d.permission_key=x.permission_key and d.scope_kind='tenant' and d.site_id is null and d.org_unit_id is null
+       and d.task_kind is null and d.task_id is null and d.status='active';
+     if v_old.id is not null and new.origin='company' and (v_old.protected_origin or (v_old.decision='deny' and v_old.granted_by<>new.invited_by)) then
+       v_why:='existing_decision_owned_by_someone_else';
      end if;
+   end if;
+   if v_why is not null then
+     v_skipped:=v_skipped||jsonb_build_array(jsonb_build_object('permission_key',x.permission_key,'why',v_why)); continue;
+   end if;
+   if v_old.id is not null then
+     update iam.member_permission_decisions set status='revoked',revoked_at=now(),revoked_by=new.invited_by,
+       revoke_reason='Replaced by invitation initial access: '||coalesce(new.decision_reason,'')
+      where id=v_old.id;
    end if;
    insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,can_read,can_write,status,granted_by,reason,protected_origin)
    values(new.tenant_id,v_membership,x.permission_key,x.decision,'tenant',x.decision='allow',x.decision='allow','active',new.invited_by,
@@ -266,8 +305,8 @@ begin
  end loop;
  perform set_config('sentriq.invitation_initial_decision','off',true);
  insert into audit.events(tenant_id,actor_user_id,actor_membership_id,scope_kind,action_key,record_type,record_id,summary)
- values(new.tenant_id,new.invited_by,v_membership,'tenant','iam.invitation.initial_access.applied','iam.memberships',v_membership,
-   jsonb_build_object('invitation_id',new.id,'applied',v_applied,'skipped',v_skipped,'reason',new.decision_reason));
+ values(new.tenant_id,new.invited_by,v_inviter,'tenant','iam.invitation.initial_access.applied','iam.memberships',v_membership,
+   jsonb_build_object('invitation_id',new.id,'invitee_membership_id',v_membership,'origin',new.origin,'applied',v_applied,'skipped',v_skipped,'reason',new.decision_reason));
  return new;
 end $$;
 create trigger invitation_initial_access after update of accepted_at on iam.invitations
@@ -309,7 +348,7 @@ begin
 end $$;
 
 revoke all on function private.normalize_invitation_decisions(jsonb), private.insert_invitation(uuid,text,text,text,interval,jsonb,text,text,uuid),
-  private.accept_invitation_core(text,uuid), private.apply_invitation_initial_access() from public,anon,authenticated,service_role;
+  private.accept_invitation_core(text,uuid), private.apply_invitation_initial_access(), private.superadmin_limited(uuid,uuid,text) from public,anon,authenticated,service_role;
 revoke all on function api.create_company_invitation(uuid,text,text,interval,text,jsonb,text), api.platform_create_invitation(uuid,text,text,text,interval,jsonb,text),
   api.accept_my_invitation(text), api.list_invitations(uuid,text,int), api.revoke_invitation(uuid,text) from public,anon;
 grant execute on function api.create_company_invitation(uuid,text,text,interval,text,jsonb,text), api.platform_create_invitation(uuid,text,text,text,interval,jsonb,text),
