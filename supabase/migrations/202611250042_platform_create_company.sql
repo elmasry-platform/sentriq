@@ -17,7 +17,7 @@ begin
  insert into core.tenants(name,industry_label,created_by) values(v_name,nullif(btrim(coalesce(p_industry_label,'')),''),auth.uid())
   returning id into v_id;
  insert into audit.events(tenant_id,actor_user_id,scope_kind,action_key,record_type,record_id,summary)
-  values(v_id,auth.uid(),'platform','company.create','tenant',v_id,jsonb_build_object('name',v_name,'first_member',false));
+  values(v_id,auth.uid(),'tenant','company.create','tenant',v_id,jsonb_build_object('name',v_name,'first_member',false));
  return v_id;
 end $$;
 
