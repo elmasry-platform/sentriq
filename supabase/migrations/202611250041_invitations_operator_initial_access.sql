@@ -259,7 +259,7 @@ end $$;
 -- Initial access is applied by an AFTER UPDATE OF accepted_at trigger, after the membership exists.
 create or replace function private.apply_invitation_initial_access() returns trigger language plpgsql security definer set search_path='' as $$
 declare v_membership uuid; v_inviter uuid; v_ok boolean; v_applied int:=0; v_skipped jsonb:='[]'::jsonb; x record; pc iam.permission_catalog%rowtype;
-        v_why text; v_old iam.member_permission_decisions%rowtype;
+        v_why text;
 begin
  if new.accepted_at is null or old.accepted_at is not null or jsonb_array_length(new.initial_decisions)=0
     or new.intended_level='company_superadmin' then return new; end if;
@@ -284,21 +284,10 @@ begin
    elsif x.decision='allow' and new.origin='company' and not (private.has_member_module_entitlement(new.tenant_id,v_inviter,pc.module_key)
         and (pc.feature_key is null or private.has_feature_entitlement(new.tenant_id,v_inviter,pc.feature_key))) then v_why:='inviter_not_entitled';
    end if;
-   if v_why is null then
-     select * into v_old from iam.member_permission_decisions d where d.tenant_id=new.tenant_id and d.membership_id=v_membership
-       and d.permission_key=x.permission_key and d.scope_kind='tenant' and d.site_id is null and d.org_unit_id is null
-       and d.task_kind is null and d.task_id is null and d.status='active';
-     if v_old.id is not null and new.origin='company' and (v_old.protected_origin or (v_old.decision='deny' and v_old.granted_by<>new.invited_by)) then
-       v_why:='existing_decision_owned_by_someone_else';
-     end if;
-   end if;
+   -- No replace/skip of existing decisions: a membership is reactivated through reset_contract_authorizations,
+   -- which suspends its active decisions first, so none can conflict at acceptance.
    if v_why is not null then
      v_skipped:=v_skipped||jsonb_build_array(jsonb_build_object('permission_key',x.permission_key,'why',v_why)); continue;
-   end if;
-   if v_old.id is not null then
-     update iam.member_permission_decisions set status='revoked',revoked_at=now(),revoked_by=new.invited_by,
-       revoke_reason='Replaced by invitation initial access: '||coalesce(new.decision_reason,'')
-      where id=v_old.id;
    end if;
    insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,can_read,can_write,status,granted_by,reason,protected_origin)
    values(new.tenant_id,v_membership,x.permission_key,x.decision,'tenant',x.decision='allow',x.decision='allow','active',new.invited_by,
