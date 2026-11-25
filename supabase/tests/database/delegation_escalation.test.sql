@@ -4,7 +4,7 @@
 begin;
 grant usage on schema extensions to anon, authenticated, service_role;
 grant execute on all functions in schema extensions to anon, authenticated, service_role;
-select extensions.plan(31);
+select extensions.plan(32);
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at)
 select ('70000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','deleg-esc-'||i||'@example.test',now(),now(),now() from generate_series(1,10) i;
 select private.bootstrap_platform_owner('70000000-0000-0000-0000-000000000001');
@@ -54,6 +54,10 @@ select extensions.throws_ok($$select api.create_delegation('71000000-0000-0000-0
 select extensions.lives_ok($$select api.create_delegation('71000000-0000-0000-0000-000000000001','72000000-0000-0000-0000-000000000005','employees_default',null,null,array['role_assignment'],now(),null,'Same level')$$,'D11 positive control: the same level is allowed');
 select extensions.lives_ok($$select api.create_delegation('71000000-0000-0000-0000-000000000001','72000000-0000-0000-0000-000000000005','employees_default',null,null,array['scope_management'],now(),null,'Second envelope, other capability')$$,'D12 positive control: each capability is allowed on its own through the envelope that holds it');
 select extensions.throws_ok($$select api.create_delegation('71000000-0000-0000-0000-000000000001','72000000-0000-0000-0000-000000000004','employees_default',null,null,array['role_assignment','scope_management'],now(),null,'Two capabilities from two envelopes')$$,'42501','delegation_parent_envelope_required','D13 capabilities held through two different envelopes cannot be combined into one child (no single parent covers both; only the parent subset check stops this)');
+reset role;
+select set_config('request.jwt.claim.sub','70000000-0000-0000-0000-000000000004',true);
+select extensions.throws_ok($$insert into iam.delegation_envelopes(tenant_id,grantor_membership_id,delegate_membership_id,level,allowed_capabilities,starts_at,parent_envelope_id,created_by) values('71000000-0000-0000-0000-000000000001','72000000-0000-0000-0000-000000000004','72000000-0000-0000-0000-000000000005','tenant',array['scope_management'],now(),(select id from env where k='C'),'70000000-0000-0000-0000-000000000004')$$,'42501','delegation_exceeds_parent_envelope','D32 trigger-level subset check: a direct insert (table owner path, bypassing the API) with a capability the parent does not hold is refused by the guard trigger itself');
+set local role authenticated;
 select set_config('request.jwt.claim.sub','70000000-0000-0000-0000-000000000004',true);
 select set_config('request.jwt.claim.sub','70000000-0000-0000-0000-000000000005',true);
 select extensions.throws_ok($$select api.create_delegation('71000000-0000-0000-0000-000000000001','72000000-0000-0000-0000-000000000004','tenant',null,null,array['role_assignment'],now(),null,'Widen from a child envelope')$$,'42501','delegation_parent_envelope_required','D14 a delegate of an employees_default child cannot widen to tenant level');
