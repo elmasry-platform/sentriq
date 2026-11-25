@@ -6,21 +6,7 @@
 begin;
 grant usage on schema extensions to anon, authenticated, service_role;
 grant execute on all functions in schema extensions to anon, authenticated, service_role;
-create function public.iso_foreign_rows(p_tenant uuid) returns integer language plpgsql security invoker as $f$
-declare r record; n integer; total integer:=0;
-begin
-  for r in select c.table_schema s, c.table_name t from information_schema.columns c
-    join information_schema.tables x on x.table_schema=c.table_schema and x.table_name=c.table_name and x.table_type='BASE TABLE'
-    where c.table_schema in ('hse','core') and c.column_name='tenant_id'
-      and has_table_privilege(current_user, format('%I.%I',c.table_schema,c.table_name),'select')
-  loop
-    execute format('select count(*) from %I.%I where tenant_id<>$1',r.s,r.t) into n using p_tenant;
-    total:=total+n;
-  end loop;
-  return total;
-end $f$;
-grant execute on function public.iso_foreign_rows(uuid) to authenticated;
-select extensions.plan(9);
+select extensions.plan(12);
 
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at) values
  ('00000000-0000-0000-0000-0000000009a1','authenticated','authenticated','iso-owner@example.test','',now(),'{}','{}',now(),now()),
@@ -112,5 +98,21 @@ select extensions.throws_ok($$select count(*) from api.v_workspaces$$,'42501',nu
 reset role;
 select extensions.ok((select coalesce('security_invoker=true'=any(c.reloptions),false) from pg_class c where c.oid='api.v_workspaces'::regclass),'V08 the view runs as the caller (security_invoker), so core.tenants RLS applies');
 select extensions.ok(has_table_privilege('authenticated','api.v_workspaces','select') and not has_table_privilege('anon','api.v_workspaces','select'),'V09 grants: authenticated can select, anon cannot');
+-- Status filters live in the RLS function (active tenant AND active membership), not in the view.
+insert into core.tenants(id,name,created_by) values ('9c000000-0000-0000-0000-00000000000c','Workspace C','00000000-0000-0000-0000-0000000009a1');
+insert into iam.memberships(id,tenant_id,user_id,member_role,status,email) values ('92000000-0000-0000-0000-0000000009c1','9c000000-0000-0000-0000-00000000000c','00000000-0000-0000-0000-0000000009a2','employee','active','iso-reader-a@example.test');
+select set_config('request.jwt.claim.role','authenticated',true);
+set local role authenticated;
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009a2',true);
+select extensions.is((select count(*)::int from api.v_workspaces where id in ('9a000000-0000-0000-0000-00000000000a','9c000000-0000-0000-0000-00000000000c')),2,'V10 positive control: a user with two active memberships in two active companies sees both');
+reset role;
+update core.tenants set status='suspended' where id='9c000000-0000-0000-0000-00000000000c';
+set local role authenticated;
+select extensions.is((select count(*)::int from api.v_workspaces where id='9c000000-0000-0000-0000-00000000000c'),0,'V11 a suspended company is not visible through the view, even to its active member');
+reset role;
+update iam.memberships set status='suspended' where id='92000000-0000-0000-0000-0000000009c1' or (tenant_id='9a000000-0000-0000-0000-00000000000a' and user_id='00000000-0000-0000-0000-0000000009a2');
+set local role authenticated;
+select extensions.is((select count(*)::int from api.v_workspaces),0,'V12 a member whose membership is suspended sees no workspace');
+reset role;
 select * from extensions.finish();
 rollback;
