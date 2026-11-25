@@ -6,19 +6,21 @@
 begin;
 grant usage on schema extensions to anon, authenticated, service_role;
 grant execute on all functions in schema extensions to anon, authenticated, service_role;
-select extensions.plan(46);
+select extensions.plan(57);
 
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at) values
  ('00000000-0000-0000-0000-0000000009a1','authenticated','authenticated','iso-owner@example.test','',now(),'{}','{}',now(),now()),
  ('00000000-0000-0000-0000-0000000009a2','authenticated','authenticated','iso-reader-a@example.test','',now(),'{}','{}',now(),now()),
- ('00000000-0000-0000-0000-0000000009a3','authenticated','authenticated','iso-reader-b@example.test','',now(),'{}','{}',now(),now());
+ ('00000000-0000-0000-0000-0000000009a3','authenticated','authenticated','iso-reader-b@example.test','',now(),'{}','{}',now(),now()),
+ ('00000000-0000-0000-0000-0000000009a4','authenticated','authenticated','iso-admin-a@example.test','',now(),'{}','{}',now(),now());
 select private.bootstrap_platform_owner('00000000-0000-0000-0000-0000000009a1');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009a1',true);
 select set_config('request.jwt.claim.role','authenticated',true);
 insert into core.tenants(id,name,created_by) values ('9a000000-0000-0000-0000-00000000000a','Isolation A','00000000-0000-0000-0000-0000000009a1'),('9b000000-0000-0000-0000-00000000000b','Isolation B','00000000-0000-0000-0000-0000000009a1');
 insert into iam.memberships(id,tenant_id,user_id,member_role,status,email) values
  ('91000000-0000-0000-0000-000000000001','9a000000-0000-0000-0000-00000000000a','00000000-0000-0000-0000-0000000009a2','employee','active','iso-reader-a@example.test'),
- ('91000000-0000-0000-0000-000000000002','9b000000-0000-0000-0000-00000000000b','00000000-0000-0000-0000-0000000009a3','employee','active','iso-reader-b@example.test');
+ ('91000000-0000-0000-0000-000000000002','9b000000-0000-0000-0000-00000000000b','00000000-0000-0000-0000-0000000009a3','employee','active','iso-reader-b@example.test'),
+ ('91000000-0000-0000-0000-000000000003','9a000000-0000-0000-0000-00000000000a','00000000-0000-0000-0000-0000000009a4','company_superadmin','active','iso-admin-a@example.test');
 insert into core.tenant_entitlements(tenant_id,module_key,status,changed_by)
  select x,'hse','active','00000000-0000-0000-0000-0000000009a1' from (values ('9a000000-0000-0000-0000-00000000000a'::uuid),('9b000000-0000-0000-0000-00000000000b'::uuid)) v(x);
 insert into core.entitlement_grants(tenant_id,module_key,starts_at,expires_at,granted_by,reason,billing_treatment,source_kind,legacy_entitlement_id)
@@ -113,14 +115,32 @@ select extensions.is((select count(*)::int from hse.follow_ups where tenant_id='
 select extensions.is((select count(*)::int from hse.evidence_files where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I31 B reader cannot read A rows in hse.evidence_files');
 select extensions.is((select count(*)::int from hse.form_templates where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I32 B reader cannot read A rows in hse.form_templates');
 select extensions.is((select count(*)::int from audit.events where tenant_id='9a000000-0000-0000-0000-00000000000a' and action_key='iso.test'),0,'I33 B reader cannot read A rows in audit.events');
-select extensions.is((select count(*)::int from core.invoices where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I34 B reader cannot read A rows in core.invoices');
-select extensions.is((select count(*)::int from core.payments where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I35 B reader cannot read A rows in core.payments');
-select extensions.is((select count(*)::int from hse.findings where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I36 B reader sees no A finding even though B has the same role and module');
+select extensions.is((select count(*)::int from core.invoices where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I34 billing is operator-only: B reader sees none of A in core.invoices (not a tenant-isolation test)');
+select extensions.is((select count(*)::int from core.payments where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I35 billing is operator-only: B reader sees none of A in core.payments (not a tenant-isolation test)');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009a2',true);
+select extensions.throws_ok($$update hse.findings set tenant_id='9b000000-0000-0000-0000-00000000000b' where id='97000000-0000-0000-0000-000000000001'$$,'23514','tenant_id is immutable','I36 A reader cannot move its own finding into tenant B');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009a3',true);
 select extensions.throws_ok($$insert into hse.findings(tenant_id,site_id,inspection_id,title,created_by) values('9a000000-0000-0000-0000-00000000000a','93000000-0000-0000-0000-000000000001','96000000-0000-0000-0000-000000000001','Injected','00000000-0000-0000-0000-0000000009a3')$$,'42501',null,'I37 B cannot insert a finding into tenant A (RLS with-check or trigger, SQLSTATE 42501)');
 select extensions.throws_ok($$insert into hse.findings(tenant_id,site_id,inspection_id,title,created_by) values('9b000000-0000-0000-0000-00000000000b','93000000-0000-0000-0000-000000000001','96000000-0000-0000-0000-000000000001','Cross','00000000-0000-0000-0000-0000000009a3')$$,'42501',null,'I38 B cannot insert a B finding that points at A site and inspection');
 select extensions.throws_ok($$insert into core.invoices(tenant_id,invoice_number,status,currency,period_start,period_end) values('9b000000-0000-0000-0000-00000000000b','X','draft','USD','2026-01-01','2026-02-01')$$,'42501',null,'I39 tenant user cannot create invoices (missing INSERT grant)');
 select extensions.throws_ok($$insert into audit.events(tenant_id,actor_user_id,scope_kind,action_key,record_type,record_id,summary) values('9b000000-0000-0000-0000-00000000000b','00000000-0000-0000-0000-0000000009a3','tenant','forged','x',gen_random_uuid(),'{}')$$,'42501',null,'I40 tenant user cannot write audit events (missing INSERT grant)');
 with u as (update hse.findings set title='Hijack' where id='97000000-0000-0000-0000-000000000001' returning 1) select extensions.is((select count(*)::int from u),0,'I41 B cannot update an A finding (RLS hides the row)');
+-- Structure tables that authenticated can write by grant (tenants, org_units, sites, tenant_domains): RLS and triggers must isolate them.
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009a4',true);
+select extensions.is((select count(*)::int from core.sites where tenant_id='9a000000-0000-0000-0000-00000000000a'),1,'I47 positive control: A company superadmin sees its own site');
+select extensions.is((select count(*)::int from core.tenants where id='9a000000-0000-0000-0000-00000000000a'),1,'I48 positive control: A company superadmin sees its own tenant');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009a3',true);
+select extensions.is((select count(*)::int from core.sites where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I49 B reader cannot read A sites');
+select extensions.is((select count(*)::int from core.tenants where id='9a000000-0000-0000-0000-00000000000a'),0,'I50 B reader cannot read tenant A');
+select extensions.throws_ok($$insert into core.sites(tenant_id,name,code) values('9a000000-0000-0000-0000-00000000000a','Injected site','INJ')$$,'42501',null,'I51 B cannot insert a site into tenant A');
+select extensions.throws_ok($$insert into core.org_units(tenant_id,name) values('9a000000-0000-0000-0000-00000000000a','Injected unit')$$,'42501',null,'I52 B cannot insert an org unit into tenant A');
+select extensions.throws_ok($$insert into core.tenant_domains(tenant_id,domain_name,created_by) values('9a000000-0000-0000-0000-00000000000a','injected.example.test','00000000-0000-0000-0000-0000000009a3')$$,'42501',null,'I53 B cannot insert a domain into tenant A');
+with u as (update core.sites set name='Hijack' where tenant_id='9a000000-0000-0000-0000-00000000000a' returning 1) select extensions.is((select count(*)::int from u),0,'I54 B cannot update an A site (RLS hides the row)');
+with u as (update core.tenants set name='Hijack' where id='9a000000-0000-0000-0000-00000000000a' returning 1) select extensions.is((select count(*)::int from u),0,'I55 B cannot update tenant A (RLS hides the row)');
+-- Billing: invoices_read allows operators, but the restrictive policy platform_company_read_audit_boundary (025) denies operators on the same tables, so nobody reads invoices or payments by direct SELECT.
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009a1',true);
+select extensions.is((select count(*)::int from core.invoices where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I56 operator-only billing: even a platform operator reads no invoice by direct SELECT (restrictive boundary policy from migration 025 overrides invoices_read; billing is read through functions)');
+select extensions.is((select count(*)::int from core.payments where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I57 operator-only billing: even a platform operator reads no payment by direct SELECT (same restrictive policy)');
 reset role;
 select extensions.throws_ok($$update audit.events set summary='{"x":1}' where action_key='iso.test'$$,'42501','audit events are append-only','I42 audit update blocked by the append-only trigger, even for the table owner');
 select extensions.throws_ok($$delete from audit.events where action_key='iso.test'$$,'42501','audit events are append-only','I43 audit delete blocked by the append-only trigger, even for the table owner');
