@@ -29,13 +29,14 @@ if [ -n "${DB_CONTAINER:-}" ]; then
   psql_() { docker exec -i "$DB_CONTAINER" psql -X -qAt -v ON_ERROR_STOP=1 -U postgres -d postgres; }
   EV="canary-ok-$(rnd)@example.invalid"
   # Fixtures are removed on every exit path, including a failed check under set -e, so a failed run cannot leave rows behind.
-  cleanup_fixtures() { psql_ <<SQL >/dev/null || true
+  cleanup_fixtures() { psql_ <<SQL >/dev/null
 delete from iam.invitations where tenant_id='00000000-0000-0000-0000-00000000ca02';
-delete from auth.users where email in ('$EV','canary-owner@example.invalid');
 delete from core.tenants where id='00000000-0000-0000-0000-00000000ca02';
+delete from iam.platform_operators where user_id='00000000-0000-0000-0000-00000000ca01';
+delete from auth.users where email in ('$EV','canary-owner@example.invalid');
 SQL
   }
-  trap cleanup_fixtures EXIT
+  trap 'cleanup_fixtures || echo "WARN: canary fixture cleanup failed" >&2' EXIT
   psql_ <<SQL >/dev/null
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
  values('00000000-0000-0000-0000-00000000ca01','authenticated','authenticated','canary-owner@example.invalid','',now(),'{}','{}',now(),now()) on conflict do nothing;
