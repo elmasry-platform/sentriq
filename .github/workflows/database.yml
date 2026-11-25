@@ -34,6 +34,10 @@ jobs:
       - name: Verify SECURITY DEFINER catalog and role ACLs
         shell: pwsh
         run: ./scripts/security_catalog_checks.ps1
+      - name: Signup gate canary against the real local Auth server
+        run: |
+          eval "$(supabase status -o env)"
+          API_URL="$API_URL" ANON_KEY="$ANON_KEY" DB_CONTAINER=supabase_db_sentriq ./scripts/signup_gate_canary.sh
       - name: Run F-03 concurrency tests and verify exact cleanup
         shell: pwsh
         run: ./scripts/test_database_concurrency.ps1

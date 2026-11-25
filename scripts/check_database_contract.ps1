@@ -125,7 +125,26 @@ $permissionCompletionRequired = @(
 )
 $missingPermissionCompletion = @($permissionCompletionRequired | Where-Object { $permissionCompletionSql -notmatch [regex]::Escape($_) })
 if ($missingPermissionCompletion.Count -gt 0) { throw "Missing Phase 1 permission completion markers: $($missingPermissionCompletion -join ', ')" }
-$expectedLatestMigration = '202611250030_iam_role_tenant_restore.sql'
+$gatedSignupSql = ((@('202611250043_invitation_gated_signup.sql','202611250044_signup_gate_hardening.sql') | ForEach-Object {
+  Get-Content -Raw (Join-Path $root "supabase/migrations/$_")
+}) -join "`n").ToLowerInvariant()
+$gatedSignupRequired = @(
+  'private.validate_signup_invitation', 'api.preview_invitation', 'private.before_user_created_hook',
+  'signup_requires_valid_invitation', "'error',jsonb_build_object('http_code',403", 'exception when others then',
+  'grant usage on schema api to anon', 'grant execute on function api.preview_invitation(text) to anon,authenticated',
+  'revoke all on function private.validate_signup_invitation(text,text),private.before_user_created_hook(jsonb) from public,anon,authenticated,service_role',
+  'supabase_auth_admin', 'alter default privileges for role postgres in schema api revoke execute on functions from public, anon',
+  'private.spent_signup_tokens_in_user_metadata'
+)
+$missingGatedSignup = @($gatedSignupRequired | Where-Object { $gatedSignupSql -notmatch [regex]::Escape($_) })
+if ($missingGatedSignup.Count -gt 0) { throw "Missing invitation-gated signup markers: $($missingGatedSignup -join ', ')" }
+if ($gatedSignupSql -match '(?is)(insert\s+into\s+auth\.|update\s+auth\.|delete\s+from\s+auth\.)') { throw 'The signup gate migrations must not write to auth tables.' }
+$configToml = (Get-Content -Raw (Join-Path $root 'supabase/config.toml'))
+if ($configToml -notmatch '(?is)\[auth\.hook\.before_user_created\]\s*enabled\s*=\s*true\s*uri\s*=\s*"pg-functions://postgres/private/before_user_created_hook"') {
+  throw 'supabase/config.toml must wire the before-user-created hook to private.before_user_created_hook.'
+}
+if (-not (Test-Path -LiteralPath (Join-Path $root 'scripts/signup_gate_canary.sh'))) { throw 'The signup gate canary script is missing.' }
+$expectedLatestMigration = '202611250044_signup_gate_hardening.sql'
 if ($migrations[-1].Name -ne $expectedLatestMigration) {
   throw 'The forward remediation migration is not the latest migration timestamp.'
 }

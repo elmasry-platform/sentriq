@@ -34,8 +34,11 @@ $featureGrantId = [guid]::NewGuid().ToString('D')
 $invitedUserId = [guid]::NewGuid().ToString('D')
 $invitedMembershipId = [guid]::NewGuid().ToString('D')
 $invitationId = [guid]::NewGuid().ToString('D')
+$inviterUserId = [guid]::NewGuid().ToString('D')
+$inviterMembershipId = [guid]::NewGuid().ToString('D')
 $email = "concurrency-$([guid]::NewGuid().ToString('N'))@example.test"
 $inviteEmail = "invite-$([guid]::NewGuid().ToString('N'))@example.test"
+$inviterEmail = "inviter-$([guid]::NewGuid().ToString('N'))@example.test"
 $token = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
 $quota = 3
 $requestCount = 12
@@ -51,16 +54,19 @@ insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,r
 values('$userId','authenticated','authenticated','$email','',now(),'{}','{}',now(),now());
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 values('$invitedUserId','authenticated','authenticated','$inviteEmail','',now(),'{}','{}',now(),now());
+insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
+values('$inviterUserId','authenticated','authenticated','$inviterEmail','',now(),'{}','{}',now(),now());
 insert into core.tenants(id,name,created_by) values('$tenantId','Synthetic concurrency $runId','$userId');
 insert into iam.memberships(id,tenant_id,user_id,member_role,status,email)
 values('$membershipId','$tenantId','$userId','employee','active','$email'),
-      ('$invitedMembershipId','$tenantId','$invitedUserId','employee','invited','$inviteEmail');
+      ('$invitedMembershipId','$tenantId','$invitedUserId','employee','invited','$inviteEmail'),
+      ('$inviterMembershipId','$tenantId','$inviterUserId','company_superadmin','active','$inviterEmail');
 insert into core.entitlement_grants(id,tenant_id,module_key,starts_at,expires_at,granted_by,reason,billing_treatment)
 values('$moduleGrantId','$tenantId','hse',now()-interval '1 minute',now()+interval '1 day','$userId','Synthetic concurrency module grant','complimentary');
 insert into core.entitlement_grants(id,tenant_id,feature_key,membership_id,starts_at,expires_at,granted_by,reason,billing_treatment,bill_to_tenant_id,currency,unit_price_minor,quota)
 values('$featureGrantId','$tenantId','hse.copilot','$membershipId',now()-interval '1 minute',now()+interval '1 day','$userId','Synthetic concurrency quota grant','tenant_billable','$tenantId','USD',7,$quota);
 insert into iam.invitations(id,tenant_id,email,token_hash,intended_level,invited_by,expires_at)
-values('$invitationId','$tenantId','$inviteEmail',extensions.digest('$token','sha256'),'employee','$userId',now()+interval '1 day');
+values('$invitationId','$tenantId','$inviteEmail',extensions.digest('$token','sha256'),'employee','$inviterUserId',now()+interval '1 day');
 commit;
 "@
 
@@ -240,9 +246,9 @@ delete from core.invoices where tenant_id='$tenantId' and id='$invoiceId';
 delete from core.usage_events where tenant_id='$tenantId' and grant_id='$featureGrantId';
 delete from iam.invitations where tenant_id='$tenantId' and id='$invitationId';
 delete from core.entitlement_grants where tenant_id='$tenantId' and id in ('$moduleGrantId','$featureGrantId');
-delete from iam.memberships where tenant_id='$tenantId' and id in ('$membershipId','$invitedMembershipId');
+delete from iam.memberships where tenant_id='$tenantId' and id in ('$membershipId','$invitedMembershipId','$inviterMembershipId');
 delete from core.tenants where id='$tenantId';
-delete from auth.users where id in ('$userId','$invitedUserId');
+delete from auth.users where id in ('$userId','$invitedUserId','$inviterUserId');
 alter table audit.events enable trigger audit_events_immutable;
 alter table core.usage_events enable trigger usage_events_immutable;
 alter table core.invoice_items enable trigger invoice_items_immutable;
@@ -258,9 +264,9 @@ commit;
   $cleanupResult = Invoke-LocalDatabaseSql $cleanup
   $verification = Invoke-LocalDatabaseSql @"
 select
- (select count(*) from auth.users where id in ('$userId','$invitedUserId')) +
+ (select count(*) from auth.users where id in ('$userId','$invitedUserId','$inviterUserId')) +
  (select count(*) from core.tenants where id='$tenantId') +
- (select count(*) from iam.memberships where tenant_id='$tenantId' and id in ('$membershipId','$invitedMembershipId')) +
+ (select count(*) from iam.memberships where tenant_id='$tenantId' and id in ('$membershipId','$invitedMembershipId','$inviterMembershipId')) +
  (select count(*) from iam.invitations where tenant_id='$tenantId' and id='$invitationId') +
  (select count(*) from core.entitlement_grants where tenant_id='$tenantId' and id in ('$moduleGrantId','$featureGrantId')) +
  (select count(*) from core.usage_events where tenant_id='$tenantId' and grant_id='$featureGrantId') +
