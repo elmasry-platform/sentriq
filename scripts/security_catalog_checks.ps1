@@ -59,6 +59,16 @@ declare
     'api.platform_set_member_entitlement(uuid, uuid, text, text, text, boolean, boolean, timestamp with time zone, timestamp with time zone)',
     'api.revoke_delegated_entitlement(uuid, text)',
     'api.update_subscription_status(uuid, text)',
+    'api.accept_my_invitation(text)',
+    'api.clear_member_permission_decision(uuid, uuid, text, text)',
+    'api.company_member_permission_decisions(uuid)',
+    'api.list_invitations(uuid, text, integer)',
+    'api.list_permission_catalog()',
+    'api.my_platform_permissions()',
+    'api.platform_create_company(text, text)',
+    'api.platform_create_invitation(uuid, text, text, text, interval, jsonb, text)',
+    'api.platform_subowner_permissions(uuid)',
+    'api.preview_invitation(text)',
     'private.can_access_core(uuid, text, uuid, boolean)',
     'private.can_access_hse(uuid, text, uuid, boolean, text, uuid)',
     'private.can_access_tenant(uuid)',
@@ -81,6 +91,10 @@ declare
     'private.phase1_membership(uuid)',
     'private.phase1_permission_allowed(uuid, text, uuid, uuid, boolean, text, uuid)'
   ];
+  -- The only SECURITY DEFINER routine anon may run is the anonymous invitation preview; the Auth hook runs as
+  -- supabase_auth_admin (present on the local and hosted Supabase stack).
+  v_expected_anon text[] := array['api.preview_invitation(text)'];
+  v_observed_anon text[];
   v_observed_authenticated text[];
   v_observed_service text[];
   v_authenticated_oid oid := 'authenticated'::regrole::oid;
@@ -101,6 +115,28 @@ begin
     ) s;
   if not (v_observed_authenticated @> v_expected_authenticated and v_expected_authenticated @> v_observed_authenticated) then
     raise exception 'authenticated SECURITY DEFINER ACL mismatch; observed %, expected %',v_observed_authenticated,v_expected_authenticated;
+  end if;
+
+  select coalesce(array_agg(s.signature order by s.signature collate "C"),array[]::text[])
+    into v_observed_anon
+    from (
+      select n.nspname||'.'||p.proname||'('||pg_catalog.oidvectortypes(p.proargtypes)||')' as signature
+        from pg_catalog.pg_proc p
+        join pg_catalog.pg_namespace n on n.oid=p.pronamespace
+       where n.nspname in ('api','private') and p.prosecdef
+         and has_function_privilege('anon',p.oid,'EXECUTE')
+    ) s;
+  if not (v_observed_anon @> v_expected_anon and v_expected_anon @> v_observed_anon) then
+    raise exception 'anon SECURITY DEFINER ACL mismatch; observed %, expected %',v_observed_anon,v_expected_anon;
+  end if;
+  if not exists(select 1 from pg_catalog.pg_proc p where p.pronamespace='private'::regnamespace and p.proname='before_user_created_hook'
+        and has_function_privilege('supabase_auth_admin',p.oid,'EXECUTE')) then
+    raise exception 'supabase_auth_admin must be able to run private.before_user_created_hook';
+  end if;
+  if exists(select 1 from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid=p.pronamespace
+        where n.nspname='private' and p.proname in ('before_user_created_hook','validate_signup_invitation','spent_signup_tokens_in_user_metadata')
+          and (has_function_privilege('anon',p.oid,'EXECUTE') or has_function_privilege('authenticated',p.oid,'EXECUTE') or has_function_privilege('service_role',p.oid,'EXECUTE'))) then
+    raise exception 'signup gate routines must not be executable by API roles';
   end if;
 
   select coalesce(array_agg(s.signature order by s.signature collate "C"),array[]::text[])
@@ -132,10 +168,13 @@ begin
     cross join lateral aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
     where n.nspname in ('api','private') and p.prosecdef
       and a.privilege_type='EXECUTE'
-      and (a.grantee=0 or pg_catalog.pg_get_userbyid(a.grantee)='anon'
-        or a.grantee not in (p.proowner,v_authenticated_oid,v_service_oid))
+      and (a.grantee=0
+        or (pg_catalog.pg_get_userbyid(a.grantee)='anon' and p.proname<>'preview_invitation')
+        or (a.grantee not in (p.proowner,v_authenticated_oid,v_service_oid)
+            and not (pg_catalog.pg_get_userbyid(a.grantee)='anon' and p.proname='preview_invitation')
+            and not (pg_catalog.pg_get_userbyid(a.grantee)='supabase_auth_admin' and p.proname='before_user_created_hook')))
   ) then
-    raise exception 'SECURITY DEFINER ACL contains PUBLIC, anon, or an unapproved grantee';
+    raise exception 'SECURITY DEFINER ACL contains PUBLIC, anon (other than the invitation preview), or an unapproved grantee';
   end if;
 
   if exists (

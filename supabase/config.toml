@@ -14,3 +14,16 @@ enabled = true
 
 [db.seed]
 enabled = false
+
+# Public signup is closed by the Before User Created hook below: a signup is accepted only when it carries a
+# valid, unexpired invitation token for the same email (private.validate_signup_invitation). The hosted TEST
+# project needs the same hook set through the management API; scripts/signup_gate_canary.sh checks the wiring.
+[auth]
+enable_signup = true
+
+[auth.email]
+enable_confirmations = false
+
+[auth.hook.before_user_created]
+enabled = true
+uri = "pg-functions://postgres/private/before_user_created_hook"
