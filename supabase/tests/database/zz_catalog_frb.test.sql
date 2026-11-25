@@ -1,6 +1,6 @@
 -- TEMP, never merge. Prints the md5 of the api+private function catalog and of all non-internal triggers.
 begin;
-select extensions.plan(4);
+select extensions.plan(1);
 create temp table m(id serial, step text, f text, t text, fc bigint, tc bigint);
 insert into m(step,f,t,fc,tc) select 'FORWARD_1',x.* from (select (select md5(string_agg(pg_get_functiondef(p.oid), '' order by p.oid::regprocedure::text)) from pg_proc p where p.pronamespace in ('api'::regnamespace,'private'::regnamespace) and p.prokind='f'), (select md5(string_agg(tgrelid::regclass::text||tgname||tgenabled::text, ',' order by tgrelid::regclass::text,tgname)) from pg_trigger where not tgisinternal), (select count(*) from pg_proc p where p.pronamespace in ('api'::regnamespace,'private'::regnamespace) and p.prokind='f'), (select count(*) from pg_trigger where not tgisinternal)) x;
 do $r$ begin execute $rb$
@@ -466,9 +466,9 @@ end $function$;
 
 $fw$; end $r$;
 insert into m(step,f,t,fc,tc) select 'FORWARD_2',x.* from (select (select md5(string_agg(pg_get_functiondef(p.oid), '' order by p.oid::regprocedure::text)) from pg_proc p where p.pronamespace in ('api'::regnamespace,'private'::regnamespace) and p.prokind='f'), (select md5(string_agg(tgrelid::regclass::text||tgname||tgenabled::text, ',' order by tgrelid::regclass::text,tgname)) from pg_trigger where not tgisinternal), (select count(*) from pg_proc p where p.pronamespace in ('api'::regnamespace,'private'::regnamespace) and p.prokind='f'), (select count(*) from pg_trigger where not tgisinternal)) x;
-select extensions.ok(true,'CATALOG_'||step||' functions_md5='||f||' triggers_md5='||t||' function_count='||fc||' trigger_count='||tc) from m where step='FORWARD_1';
-select extensions.ok(true,'CATALOG_'||step||' functions_md5='||f||' triggers_md5='||t||' function_count='||fc||' trigger_count='||tc) from m where step='AFTER_ROLLBACK';
-select extensions.ok(true,'CATALOG_'||step||' functions_md5='||f||' triggers_md5='||t||' function_count='||fc||' trigger_count='||tc) from m where step='FORWARD_2';
+do $w$ declare r record; begin for r in select * from m where step='FORWARD_1' loop raise warning 'CATALOG_% functions_md5=% triggers_md5=% function_count=% trigger_count=%', r.step, r.f, r.t, r.fc, r.tc; end loop; end $w$;
+do $w$ declare r record; begin for r in select * from m where step='AFTER_ROLLBACK' loop raise warning 'CATALOG_% functions_md5=% triggers_md5=% function_count=% trigger_count=%', r.step, r.f, r.t, r.fc, r.tc; end loop; end $w$;
+do $w$ declare r record; begin for r in select * from m where step='FORWARD_2' loop raise warning 'CATALOG_% functions_md5=% triggers_md5=% function_count=% trigger_count=%', r.step, r.f, r.t, r.fc, r.tc; end loop; end $w$;
 select extensions.ok((select f||t from m where step='FORWARD_1')=(select f||t from m where step='FORWARD_2'),'CATALOG forward twice gives identical catalogs');
 select * from extensions.finish();
 rollback;
