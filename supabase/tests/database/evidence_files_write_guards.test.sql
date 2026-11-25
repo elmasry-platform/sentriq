@@ -4,7 +4,7 @@
 begin;
 grant usage on schema extensions to anon, authenticated, service_role;
 grant execute on all functions in schema extensions to anon, authenticated, service_role;
-select extensions.plan(15);
+select extensions.plan(17);
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at) values
  ('00000000-0000-0000-0000-0000000009c1','authenticated','authenticated','ev-owner@example.test','',now(),'{}','{}',now(),now()),
  ('00000000-0000-0000-0000-0000000009c2','authenticated','authenticated','ev-up-a@example.test','',now(),'{}','{}',now(),now()),
@@ -82,5 +82,7 @@ select extensions.throws_ok($$insert into hse.evidence_files(tenant_id,site_id,l
 select extensions.throws_ok($$insert into hse.evidence_files(tenant_id,site_id,linked_record_type,linked_record_id,storage_key,file_name,mime_type,size_bytes,uploaded_by) values('9a000000-0000-0000-0000-00000000000a','93000000-0000-0000-0000-0000000000a1','finding','97000000-0000-0000-0000-0000000000a2','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/w9.png','n.png','image/png',10,'00000000-0000-0000-0000-0000000009c2')$$,'23503','evidence target is invalid for tenant/site','W15 same tenant: uploader claims its own site but links a record that belongs to another site: rejected');
 reset role;
 select extensions.is((select count(*)::int from hse.evidence_files where tenant_id='9a000000-0000-0000-0000-00000000000a' and storage_key like '9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/w%'),2,'W13 only the two rows created by the uploader exist (W01 and W03); no cross-tenant rows');
+select extensions.is((select count(*)::int from pg_roles r where r.rolname not in ('postgres','authenticated','anon') and not r.rolsuper and r.rolname !~ '^pg_' and (has_table_privilege(r.oid,'hse.evidence_files','insert') or has_table_privilege(r.oid,'hse.evidence_files','update') or has_table_privilege(r.oid,'hse.evidence_files','delete'))),0,'W16 no other role (service_role included) holds INSERT, UPDATE or DELETE on hse.evidence_files');
+select extensions.ok(has_table_privilege('authenticated','hse.evidence_files','insert') and not has_table_privilege('anon','hse.evidence_files','insert'),'W17 positive control for W16: authenticated can insert, anon cannot, so the check sees real privileges');
 select * from extensions.finish();
 rollback;
