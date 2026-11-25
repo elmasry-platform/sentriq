@@ -60,6 +60,7 @@ declare
     'api.revoke_delegated_entitlement(uuid, text)',
     'api.update_subscription_status(uuid, text)',
     'api.accept_my_invitation(text)',
+    'api.confirm_evidence(uuid, uuid)',
     'api.clear_member_permission_decision(uuid, uuid, text, text)',
     'api.company_member_permission_decisions(uuid)',
     'api.list_invitations(uuid, text, integer)',
