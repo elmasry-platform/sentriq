@@ -29,11 +29,24 @@ if [ -n "${DB_CONTAINER:-}" ]; then
   psql_() { docker exec -i "$DB_CONTAINER" psql -X -qAt -v ON_ERROR_STOP=1 -U postgres -d postgres; }
   EV="canary-ok-$(rnd)@example.invalid"
   # Fixtures are removed on every exit path, including a failed check under set -e, so a failed run cannot leave rows behind.
+  # Disposable local database only. One transaction, so the audit triggers are re-enabled even if a delete fails.
   cleanup_fixtures() { psql_ <<SQL >/dev/null
+begin;
+alter table audit.events disable trigger audit_events_immutable;
+alter table core.tenants disable trigger audit_row_change;
+alter table iam.invitations disable trigger audit_row_change;
+alter table iam.memberships disable trigger audit_row_change;
+delete from audit.events where tenant_id='00000000-0000-0000-0000-00000000ca02' or actor_user_id='00000000-0000-0000-0000-00000000ca01';
 delete from iam.invitations where tenant_id='00000000-0000-0000-0000-00000000ca02';
+delete from iam.memberships where tenant_id='00000000-0000-0000-0000-00000000ca02';
 delete from core.tenants where id='00000000-0000-0000-0000-00000000ca02';
 delete from iam.platform_operators where user_id='00000000-0000-0000-0000-00000000ca01';
 delete from auth.users where email in ('$EV','canary-owner@example.invalid');
+alter table audit.events enable trigger audit_events_immutable;
+alter table core.tenants enable trigger audit_row_change;
+alter table iam.invitations enable trigger audit_row_change;
+alter table iam.memberships enable trigger audit_row_change;
+commit;
 SQL
   }
   trap 'cleanup_fixtures || echo "WARN: canary fixture cleanup failed" >&2' EXIT
