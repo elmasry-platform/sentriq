@@ -238,16 +238,26 @@ select extensions.ok((api.platform_read_company('91000000-0000-0000-0000-0000000
 select extensions.is(jsonb_array_length(api.platform_operator_roster()->'rows'),2,'platform roster read is available through audited RPC');
 select extensions.ok((api.platform_operator_roster()->>'audit_event_id')::bigint>0,'platform roster returns an audit event');
 select extensions.ok(not exists(select 1 from pg_policies where schemaname='iam' and tablename='invitations' and cmd in ('INSERT','UPDATE')),'stale invitation direct-write policies are removed');
-select extensions.throws_ok($$select api.set_module_enabled('operations',false)$$,'42501',null,'Subowner module toggle denied by default');
+-- Since migration 031 (product decision 2026-11-24) a Subowner may do everything the Owner has not withdrawn.
+-- These checks therefore withdraw each power first and expect the specific denial, then the Owner restores it.
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000001',true);
+select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','module.toggle',false,'Owner withdraws module toggle');
+select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','membership.lifecycle',false,'Owner withdraws member lifecycle');
+select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','company.rename',false,'Owner withdraws company rename');
+select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','company.close',false,'Owner withdraws company close');
+select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000008',true);
+select extensions.throws_ok($$select api.set_module_enabled('operations',false)$$,'42501',null,'Subowner module toggle denied once the Owner withdraws it');
 select extensions.throws_ok($$select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','module.toggle',true,'Attempt self escalation')$$,'42501','only_owner_can_manage_platform_permissions','Subowner cannot grant itself platform powers');
+select extensions.throws_ok($$select api.platform_set_membership_status('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000002','suspended','Cannot suspend Superadmin')$$,'42501','superadmin_lifecycle_not_allowed','Superadmin suspension denied once the Owner withdraws member lifecycle');
+select extensions.throws_ok($$select api.platform_rename_tenant('91000000-0000-0000-0000-000000000002','Attempt rename','Cannot rename company')$$,'42501','company_rename_not_allowed','company rename denied once the Owner withdraws it');
+select extensions.throws_ok($$select api.platform_set_tenant_status('91000000-0000-0000-0000-000000000002','closed','Cannot close company')$$,'42501','company_close_not_allowed','company closure denied once the Owner withdraws it');
 select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000001',true);
 select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','module.toggle',true,'Owner authorizes module toggle');
 select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','delegation.review',true,'Owner authorizes review');
 select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','membership.lifecycle',true,'Owner authorizes member lifecycle');
+select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','company.rename',true,'Owner restores company rename');
+select api.set_subowner_platform_permission('90000000-0000-0000-0000-000000000008','company.close',true,'Owner restores company close');
 select set_config('request.jwt.claim.sub','90000000-0000-0000-0000-000000000008',true);
-select extensions.throws_ok($$select api.platform_set_membership_status('91000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000002','suspended','Cannot suspend Superadmin')$$,'42501','superadmin_lifecycle_owner_only','Superadmin suspension stays Owner-only even with membership grant');
-select extensions.throws_ok($$select api.platform_rename_tenant('91000000-0000-0000-0000-000000000002','Attempt rename','Cannot rename company')$$,'42501','company_rename_owner_only','company rename stays Owner-only');
-select extensions.throws_ok($$select api.platform_set_tenant_status('91000000-0000-0000-0000-000000000002','closed','Cannot close company')$$,'42501','company_close_owner_only','company closure stays Owner-only');
 select extensions.lives_ok($$select api.review_delegation('91000000-0000-0000-0000-000000000001',(select (r->>'id')::uuid from jsonb_array_elements(api.platform_read_company('91000000-0000-0000-0000-000000000001','iam.delegation_envelopes')->'rows') r where r->>'status'='active' limit 1),'extend',now()+interval '2 hours','Shared platform delegation review')$$,'Subowner can extend another company delegation under shared platform authority');
 select extensions.lives_ok($$select api.platform_set_tenant_status('91000000-0000-0000-0000-000000000002','suspended','Shared platform lifecycle authority')$$,'Subowner retains company suspension authority through guarded RPC');
 select extensions.lives_ok($$select api.platform_set_tenant_status('91000000-0000-0000-0000-000000000002','active','Shared platform reactivation authority')$$,'Subowner retains company reactivation authority');
