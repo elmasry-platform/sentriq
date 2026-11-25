@@ -6,7 +6,21 @@
 begin;
 grant usage on schema extensions to anon, authenticated, service_role;
 grant execute on all functions in schema extensions to anon, authenticated, service_role;
-select extensions.plan(57);
+create function public.iso_foreign_rows(p_tenant uuid) returns integer language plpgsql security invoker as $f$
+declare r record; n integer; total integer:=0;
+begin
+  for r in select c.table_schema s, c.table_name t from information_schema.columns c
+    join information_schema.tables x on x.table_schema=c.table_schema and x.table_name=c.table_name and x.table_type='BASE TABLE'
+    where c.table_schema in ('hse','core') and c.column_name='tenant_id'
+      and has_table_privilege(current_user, format('%I.%I',c.table_schema,c.table_name),'select')
+  loop
+    execute format('select count(*) from %I.%I where tenant_id<>$1',r.s,r.t) into n using p_tenant;
+    total:=total+n;
+  end loop;
+  return total;
+end $f$;
+grant execute on function public.iso_foreign_rows(uuid) to authenticated;
+select extensions.plan(69);
 
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at) values
  ('00000000-0000-0000-0000-0000000009a1','authenticated','authenticated','iso-owner@example.test','',now(),'{}','{}',now(),now()),
@@ -138,7 +152,21 @@ select extensions.throws_ok($$insert into core.tenant_domains(tenant_id,domain_n
 with u as (update core.sites set name='Hijack' where tenant_id='9a000000-0000-0000-0000-00000000000a' returning 1) select extensions.is((select count(*)::int from u),0,'I54 B cannot update an A site (RLS hides the row)');
 with u as (update core.tenants set name='Hijack' where id='9a000000-0000-0000-0000-00000000000a' returning 1) select extensions.is((select count(*)::int from u),0,'I55 B cannot update tenant A (RLS hides the row)');
 -- Billing: invoices_read allows operators, but the restrictive policy platform_company_read_audit_boundary (025) denies operators on the same tables, so nobody reads invoices or payments by direct SELECT.
+select extensions.is((select count(*)::int from hse.findings where tenant_id<>'9b000000-0000-0000-0000-00000000000b'),0,'I59 symmetry: B reader sees no finding outside tenant B');
+select extensions.cmp_ok((select count(*)::int from information_schema.columns c where c.table_schema in ('hse','core') and c.column_name='tenant_id' and has_table_privilege('authenticated', format('%I.%I', c.table_schema, c.table_name), 'select') and (select table_type from information_schema.tables x where x.table_schema=c.table_schema and x.table_name=c.table_name)='BASE TABLE'),'>=',10,'I60 generic loop covers at least 10 tenant-scoped base tables in hse/core that authenticated can select');
+select extensions.is(public.iso_foreign_rows('9b000000-0000-0000-0000-00000000000b'::uuid),0,'I61 generic loop: B reader sees 0 foreign-tenant rows in every selectable tenant-scoped table in hse and core');
+select extensions.throws_ok($$delete from hse.findings where tenant_id='9a000000-0000-0000-0000-00000000000a'$$,'42501',null,'I62 B reader cannot delete A findings (stopped by missing DELETE grant; RLS would hide the rows anyway)');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009a2',true);
+select extensions.is((select count(*)::int from hse.findings where tenant_id<>'9a000000-0000-0000-0000-00000000000a'),0,'I63 symmetry: A reader sees no finding outside tenant A');
+select extensions.is(public.iso_foreign_rows('9a000000-0000-0000-0000-00000000000a'::uuid),0,'I64 generic loop: A reader sees 0 foreign-tenant rows in every selectable tenant-scoped table in hse and core');
+select extensions.is((select count(*)::int from hse.findings where tenant_id='9a000000-0000-0000-0000-00000000000a'),1,'I65 positive control: A reader still sees its own finding after the B delete attempt');
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009ff',true);
+select extensions.is((select count(*)::int from hse.findings),0,'I66 a signed-in user with no membership reads 0 rows from hse.findings');
+select extensions.is((select count(*)::int from hse.inspections)+(select count(*)::int from hse.corrective_actions)+(select count(*)::int from hse.evidence_files),0,'I67 a user with no membership reads 0 inspections, actions and evidence');
+select extensions.is((select count(*)::int from pg_policies p where p.schemaname in ('hse','core') and p.cmd in ('SELECT','ALL') and p.qual in ('true','(true)') and exists(select 1 from information_schema.columns c where c.table_schema=p.schemaname and c.table_name=p.tablename and c.column_name='tenant_id')),0,'I68 catalog: no SELECT or ALL policy on a tenant-scoped hse/core table has a literal true qualifier');
+select extensions.cmp_ok((select count(*)::int from pg_policies p where p.schemaname in ('hse','core') and p.cmd in ('SELECT','ALL')),'>=',10,'I69 catalog positive control: the policy check above looks at 10 or more read policies');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009a1',true);
+select extensions.ok(private.is_platform_operator(),'I58 same session, positive control: the caller is a platform operator, so the 0 counts below come from the boundary policy, not from a missing role');
 select extensions.is((select count(*)::int from core.invoices where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I56 operator-only billing: even a platform operator reads no invoice by direct SELECT (restrictive boundary policy from migration 025 overrides invoices_read; billing is read through functions)');
 select extensions.is((select count(*)::int from core.payments where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I57 operator-only billing: even a platform operator reads no payment by direct SELECT (same restrictive policy)');
 reset role;
