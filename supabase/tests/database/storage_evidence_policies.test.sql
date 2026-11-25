@@ -4,7 +4,9 @@
 begin;
 grant usage on schema extensions to anon, authenticated, service_role;
 grant execute on all functions in schema extensions to anon, authenticated, service_role;
-select extensions.plan(21);
+-- Match real Supabase: the API roles hold table privileges on storage.objects, so denials below come from RLS, not from privileges.
+grant select,insert,update,delete on storage.objects to anon, authenticated, service_role;
+select extensions.plan(23);
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at) values
  ('00000000-0000-0000-0000-0000000009c1','authenticated','authenticated','ev-owner@example.test','',now(),'{}','{}',now(),now()),
  ('00000000-0000-0000-0000-0000000009c2','authenticated','authenticated','ev-up-a@example.test','',now(),'{}','{}',now(),now()),
@@ -71,15 +73,15 @@ select extensions.is((select count(*)::int from storage.objects where name='9a00
 select extensions.is((select count(*)::int from storage.objects where name='9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/pending-seen.png'),0,'E06 tenant B user cannot read A pending object');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009c2',true);
 select extensions.lives_ok($$insert into storage.objects(bucket_id,name,owner) values('sentriq-hse-evidence','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/pending-new.png','00000000-0000-0000-0000-0000000009c2')$$,'E07 uploader may upload for its own pending row');
-select extensions.throws_ok($$insert into storage.objects(bucket_id,name,owner) values('sentriq-hse-evidence','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/confirmed-new.png','00000000-0000-0000-0000-0000000009c2')$$,'42501',null,'E08 upload denied when the evidence row is already confirmed');
-select extensions.throws_ok($$insert into storage.objects(bucket_id,name,owner) values('sentriq-hse-evidence','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/rejected-new.png','00000000-0000-0000-0000-0000000009c2')$$,'42501',null,'E09 upload denied when the evidence row is rejected');
-select extensions.throws_ok($$insert into storage.objects(bucket_id,name,owner) values('sentriq-hse-evidence','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/no-row.png','00000000-0000-0000-0000-0000000009c2')$$,'42501',null,'E10 upload denied when no evidence row exists for the key');
-select extensions.throws_ok($$insert into storage.objects(bucket_id,name,owner) values('sentriq-hse-evidence','9b000000-0000-0000-0000-00000000000b/93000000-0000-0000-0000-0000000000b1/wrongpath.png','00000000-0000-0000-0000-0000000009c2')$$,'42501',null,'E11 upload denied when the key path names another tenant than the evidence row');
-select extensions.throws_ok($$insert into storage.objects(bucket_id,name,owner) values('other-bucket','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/pending-new.png','00000000-0000-0000-0000-0000000009c2')$$,'42501',null,'E12 upload denied outside the evidence bucket');
+select extensions.throws_ok($$insert into storage.objects(bucket_id,name,owner) values('sentriq-hse-evidence','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/confirmed-new.png','00000000-0000-0000-0000-0000000009c2')$$,'42501','new row violates row-level security policy for table "objects"','E08 upload denied when the evidence row is already confirmed');
+select extensions.throws_ok($$insert into storage.objects(bucket_id,name,owner) values('sentriq-hse-evidence','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/rejected-new.png','00000000-0000-0000-0000-0000000009c2')$$,'42501','new row violates row-level security policy for table "objects"','E09 upload denied when the evidence row is rejected');
+select extensions.throws_ok($$insert into storage.objects(bucket_id,name,owner) values('sentriq-hse-evidence','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/no-row.png','00000000-0000-0000-0000-0000000009c2')$$,'42501','new row violates row-level security policy for table "objects"','E10 upload denied when no evidence row exists for the key');
+select extensions.throws_ok($$insert into storage.objects(bucket_id,name,owner) values('sentriq-hse-evidence','9b000000-0000-0000-0000-00000000000b/93000000-0000-0000-0000-0000000000b1/wrongpath.png','00000000-0000-0000-0000-0000000009c2')$$,'42501','new row violates row-level security policy for table "objects"','E11 upload denied when the key path names another tenant than the evidence row');
+select extensions.throws_ok($$insert into storage.objects(bucket_id,name,owner) values('other-bucket','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/pending-new.png','00000000-0000-0000-0000-0000000009c2')$$,'42501','new row violates row-level security policy for table "objects"','E12 upload denied outside the evidence bucket');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009c4',true);
-select extensions.throws_ok($$insert into storage.objects(bucket_id,name,owner) values('sentriq-hse-evidence','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/pending-new.png','00000000-0000-0000-0000-0000000009c4')$$,'42501',null,'E13 tenant B cannot upload to a tenant A pending key');
+select extensions.throws_ok($$insert into storage.objects(bucket_id,name,owner) values('sentriq-hse-evidence','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/pending-new.png','00000000-0000-0000-0000-0000000009c4')$$,'42501','new row violates row-level security policy for table "objects"','E13 tenant B cannot upload to a tenant A pending key');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009c3',true);
-select extensions.throws_ok($$insert into storage.objects(bucket_id,name,owner) values('sentriq-hse-evidence','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/reader-own.png','00000000-0000-0000-0000-0000000009c3')$$,'42501',null,'E14 reader without upload permission cannot upload even for its own pending row');
+select extensions.throws_ok($$insert into storage.objects(bucket_id,name,owner) values('sentriq-hse-evidence','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/reader-own.png','00000000-0000-0000-0000-0000000009c3')$$,'42501','new row violates row-level security policy for table "objects"','E14 reader without upload permission cannot upload even for its own pending row');
 do $$ declare n integer; begin
   update storage.objects set name=name||'x' where bucket_id='sentriq-hse-evidence';
   get diagnostics n = row_count; perform set_config('iso.e15', n::text, true);
@@ -92,8 +94,10 @@ select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009c3'
 select extensions.is((select count(*)::int from pg_policies p where p.schemaname='storage' and p.tablename='objects' and p.policyname in ('sentriq_evidence_read','sentriq_evidence_upload') and p.cmd in ('SELECT','INSERT')),2,'E19 catalog positive control: the two evidence policies exist, one SELECT and one INSERT, so E18 is looking at the right table');
 reset role;
 set local role anon;
-select extensions.throws_ok($$select count(*) from storage.objects$$,'42501',null,'E16 anon has no access to storage.objects');
+select extensions.is((select count(*)::int from storage.objects where bucket_id='sentriq-hse-evidence'),0,'E16a anon sees 0 evidence objects through RLS (privilege exists, 2 fixture objects incl. a confirmed one are hidden)');
+select extensions.throws_ok($$insert into storage.objects(bucket_id,name) values('sentriq-hse-evidence','9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/pending-new.png')$$,'42501','new row violates row-level security policy for table "objects"','E16b anon insert into the evidence bucket is refused by RLS');
 reset role;
+select extensions.ok((select relrowsecurity from pg_class where oid='storage.objects'::regclass),'E22 RLS is enabled on storage.objects (the denials above depend on it)');
 select extensions.is((select count(*)::int from storage.objects where bucket_id='sentriq-hse-evidence' and name='9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/confirmed.png'),1,'E20 fixture integrity: the confirmed fixture object exists, so the read checks used a real object (the delete path itself cannot be exercised, real Supabase blocks direct DELETE on storage.objects)');
 select extensions.is((select count(*)::int from storage.objects where bucket_id='sentriq-hse-evidence' and name like '%x'),0,'E21 E15 post-check: no evidence object name was changed by the rename attempt');
 select extensions.is((select count(*)::int from storage.objects where name like '9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/%'),3,'E17 after all attempts only the permitted upload was added (2 fixture objects + 1)');
