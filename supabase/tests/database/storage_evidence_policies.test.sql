@@ -87,14 +87,14 @@ exception when others then perform set_config('iso.e15', 'error ' || sqlstate, t
 select extensions.is(current_setting('iso.e15'),'0','E15 no UPDATE policy: a user cannot rename any evidence object (0 rows touched, no error)');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009c2',true);
 -- Real Supabase blocks direct DELETE on storage.objects (storage trigger), so deletes are checked from the catalog, not by trying them.
-select extensions.is((select count(*)::int from pg_policies p where p.schemaname='storage' and p.tablename='objects' and p.cmd in ('DELETE','ALL') and (p.qual is null or p.qual ilike '%sentriq-hse-evidence%' or p.qual in ('true','(true)') or p.with_check ilike '%sentriq-hse-evidence%')),0,'E18 catalog: no DELETE or ALL policy on storage.objects touches the evidence bucket or is a literal true');
+select extensions.is((select count(*)::int from pg_policies p where p.schemaname='storage' and p.tablename='objects' and p.cmd in ('DELETE','ALL') and not (p.qual ~ '^\(bucket_id = ''[^'']+''::text\)$' and p.qual not ilike '%sentriq-hse-evidence%')),0,'E18 catalog: every DELETE or ALL policy on storage.objects is limited to one other bucket; a broad delete policy would also cover the evidence bucket (Storage API deletes go through policies)');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009c3',true);
 select extensions.is((select count(*)::int from pg_policies p where p.schemaname='storage' and p.tablename='objects' and p.policyname in ('sentriq_evidence_read','sentriq_evidence_upload') and p.cmd in ('SELECT','INSERT')),2,'E19 catalog positive control: the two evidence policies exist, one SELECT and one INSERT, so E18 is looking at the right table');
 reset role;
 set local role anon;
 select extensions.throws_ok($$select count(*) from storage.objects$$,'42501',null,'E16 anon has no access to storage.objects');
 reset role;
-select extensions.is((select count(*)::int from storage.objects where bucket_id='sentriq-hse-evidence' and name='9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/confirmed.png'),1,'E20 the confirmed object is still there after the delete attempts');
+select extensions.is((select count(*)::int from storage.objects where bucket_id='sentriq-hse-evidence' and name='9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/confirmed.png'),1,'E20 fixture integrity: the confirmed fixture object exists, so the read checks used a real object (the delete path itself cannot be exercised, real Supabase blocks direct DELETE on storage.objects)');
 select extensions.is((select count(*)::int from storage.objects where bucket_id='sentriq-hse-evidence' and name like '%x'),0,'E21 E15 post-check: no evidence object name was changed by the rename attempt');
 select extensions.is((select count(*)::int from storage.objects where name like '9a000000-0000-0000-0000-00000000000a/93000000-0000-0000-0000-0000000000a1/%'),3,'E17 after all attempts only the permitted upload was added (2 fixture objects + 1)');
 select * from extensions.finish();
