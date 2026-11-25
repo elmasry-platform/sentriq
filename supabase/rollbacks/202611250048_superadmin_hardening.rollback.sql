@@ -1,4 +1,4 @@
--- Rollback for 048: restore the five previous function bodies, drop the triggers and helpers.
+-- Rollback for 048: restore the six previous function bodies, drop the triggers and helpers.
 drop trigger if exists a00_superadmin_target_guard on iam.member_permissions;
 drop trigger if exists a00_superadmin_target_guard on iam.membership_roles;
 drop trigger if exists a00_superadmin_target_guard on iam.membership_role_sites;

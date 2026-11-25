@@ -10,7 +10,8 @@
 --     authenticated/anon roles on rows targeting a superadmin membership (7 tables), unless the caller is a platform operator.
 --     Definer RPCs and migrations run as postgres and keep their own checks.
 --  3. api.revoke_role_assignment, assign_engagement_supervisor, create_delegation, delegate_member_entitlement reject a
---     superadmin target for non-operators (error superadmin_target_requires_operator, 42501). Signatures and ACLs unchanged.
+--     superadmin target for non-operators. The check runs AFTER each function's own authorization, so unauthorized callers
+--     get the same error as before and learn nothing about the target's role (error superadmin_target_requires_operator, 42501). Signatures and ACLs unchanged.
 --  3b. api.clear_member_permission_decision also rejects a superadmin target for non-operators (it only had the
 --     phase1_can_manage check, so a no-op clear on a superadmin wrote an audit row instead of being refused).
 --  4. api.revoke_invitation: a superadmin-level invitation can only be revoked by a platform operator with superadmin.invite.
@@ -70,7 +71,6 @@ AS $function$
 declare a iam.membership_roles%rowtype;b record;
 begin
  select * into a from iam.membership_roles where tenant_id=p_tenant_id and id=p_assignment_id for update;
- if found and private.superadmin_target_blocked(p_tenant_id,a.membership_id) then raise exception 'superadmin_target_requires_operator' using errcode='42501'; end if;
  if not found or p_reason is null or length(btrim(p_reason)) not between 3 and 500 then
   raise exception 'invalid_assignment_revocation' using errcode='22023';end if;
  if exists(select 1 from iam.role_version_permissions p where p.role_version_id=a.role_version_id and p.scope_kind='tenant')
@@ -86,6 +86,7 @@ begin
  end loop;
  if not private.can_manage_tenant(p_tenant_id) and not private.phase1_can_manage(p_tenant_id,'role_assignment',a.membership_id) then
   raise exception 'assignment_revocation_not_authorized' using errcode='42501';end if;
+ if found and private.superadmin_target_blocked(p_tenant_id,a.membership_id) then raise exception 'superadmin_target_requires_operator' using errcode='42501'; end if;
  if a.suspended_by_tenant then
   update iam.membership_roles set suspended_by_tenant=false where tenant_id=p_tenant_id and id=a.id;
  elsif a.revoked_at is null then
@@ -104,7 +105,6 @@ create or replace FUNCTION api.assign_engagement_supervisor(p_tenant_id uuid, p_
 AS $function$
 declare e hse.person_engagements%rowtype;v_id uuid;
 begin
- if private.superadmin_target_blocked(p_tenant_id,p_membership_id) then raise exception 'superadmin_target_requires_operator' using errcode='42501'; end if;
  select * into e from hse.person_engagements where tenant_id=p_tenant_id and id=p_engagement_id and status='active' for key share;
  if not found or not private.phase1_can_manage(p_tenant_id,'scope_management',p_membership_id,e.site_id,e.org_unit_id)
   or not api.authorize(p_tenant_id,'hse.people.assigned','read',e.site_id,e.org_unit_id)
@@ -112,6 +112,7 @@ begin
   or (p_ends_at is not null and p_ends_at<=now())
   or not exists(select 1 from iam.memberships where tenant_id=p_tenant_id and id=p_membership_id and status='active') then
   raise exception 'supervisor_assignment_not_authorized' using errcode='42501'; end if;
+ if private.superadmin_target_blocked(p_tenant_id,p_membership_id) then raise exception 'superadmin_target_requires_operator' using errcode='42501'; end if;
  insert into iam.engagement_supervisors(tenant_id,membership_id,engagement_id,ends_at,created_by,reason)
  values(p_tenant_id,p_membership_id,p_engagement_id,p_ends_at,private.request_actor_id(),btrim(p_reason)) returning id into v_id;
  insert into audit.events(tenant_id,actor_user_id,scope_kind,action_key,record_type,record_id,summary)
@@ -128,7 +129,6 @@ create or replace FUNCTION api.create_delegation(p_tenant_id uuid, p_delegate_me
 AS $function$
 declare v_actor uuid:=auth.uid(); v_grantor uuid; v_parent uuid; v_id uuid; c text;
 begin
- if private.superadmin_target_blocked(p_tenant_id,p_delegate_membership_id) then raise exception 'superadmin_target_requires_operator' using errcode='42501'; end if;
  select m.id into v_grantor from iam.memberships m join core.tenants t on t.id=m.tenant_id
   where m.tenant_id=p_tenant_id and m.user_id=v_actor and m.status='active' and t.status='active'
     and private.has_member_module_entitlement(p_tenant_id,m.id,'hse');
@@ -142,6 +142,7 @@ begin
      raise exception 'delegation_capability_not_authorized' using errcode='42501';
    end if;
  end loop;
+ if private.superadmin_target_blocked(p_tenant_id,p_delegate_membership_id) then raise exception 'superadmin_target_requires_operator' using errcode='42501'; end if;
  if exists(select 1 from iam.memberships m where m.tenant_id=p_tenant_id and m.id=v_grantor and m.member_role<>'company_superadmin') then
    select d.id into v_parent from iam.delegation_envelopes d where d.tenant_id=p_tenant_id
     and d.delegate_membership_id=v_grantor and d.status='active' and d.starts_at<=now()
@@ -172,7 +173,6 @@ create or replace FUNCTION api.delegate_member_entitlement(p_tenant_id uuid, p_s
 AS $function$
 declare v_actor uuid:=auth.uid(); v_am iam.memberships%rowtype; s core.entitlement_grants%rowtype; v_exp timestamptz; v_id uuid;
 begin
- if private.superadmin_target_blocked(p_tenant_id,p_target_membership_id) then raise exception 'superadmin_target_requires_operator' using errcode='42501'; end if;
  if v_actor is null or p_reason is null or length(btrim(p_reason)) not between 3 and 500 then
   raise exception 'entitlement_delegation_not_authorized' using errcode='42501'; end if;
  select m.* into v_am from iam.memberships m join core.tenants t on t.id=m.tenant_id
@@ -185,6 +185,7 @@ begin
             else private.member_module_state(p_tenant_id,v_am.id,s.module_key) end) not in ('company','personal_exception')
    or not exists(select 1 from iam.memberships tm where tm.tenant_id=p_tenant_id and tm.id=p_target_membership_id and tm.status='active') then
   raise exception 'entitlement_delegation_not_authorized' using errcode='42501'; end if;
+ if private.superadmin_target_blocked(p_tenant_id,p_target_membership_id) then raise exception 'superadmin_target_requires_operator' using errcode='42501'; end if;
  v_exp:=coalesce(p_expires_at,s.expires_at);
  if s.expires_at is not null and (v_exp is null or v_exp>s.expires_at) then
   raise exception 'delegation_cannot_outlive_source' using errcode='22023'; end if;
@@ -228,13 +229,13 @@ create or replace FUNCTION api.clear_member_permission_decision(p_tenant_id uuid
 AS $function$
 declare v_actor uuid := private.request_actor_id(); v_count int;
 begin
- if private.superadmin_target_blocked(p_tenant_id,p_membership_id) then raise exception 'superadmin_target_requires_operator' using errcode='42501'; end if;
  if v_actor is null
     or p_reason is null or length(btrim(p_reason)) not between 3 and 500
     or not exists(select 1 from iam.memberships t where t.tenant_id=p_tenant_id and t.id=p_membership_id)
     or not private.phase1_can_manage(p_tenant_id,'direct_permission_decision',p_membership_id) then
    raise exception 'direct_permission_clear_not_allowed' using errcode='42501';
  end if;
+ if private.superadmin_target_blocked(p_tenant_id,p_membership_id) then raise exception 'superadmin_target_requires_operator' using errcode='42501'; end if;
 
  if exists(select 1 from iam.memberships own where own.tenant_id=p_tenant_id and own.id=p_membership_id and own.user_id=v_actor) then
    raise exception 'own_membership_decision_not_allowed' using errcode='42501'; end if;

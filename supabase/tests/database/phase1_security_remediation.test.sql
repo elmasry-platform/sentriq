@@ -1,5 +1,5 @@
 begin;
-select extensions.plan(14);
+select extensions.plan(15);
 
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at) values
  ('00000000-0000-0000-0000-000000000101','authenticated','authenticated','phase1-remediation-owner@example.test','',now(),'{}','{}',now(),now()),
@@ -63,7 +63,14 @@ select extensions.throws_ok($$insert into iam.roles(tenant_id,role_key,label,rol
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000104',true);
 select extensions.ok(private.can_manage_tenant('cccccccc-cccc-cccc-cccc-ccccccccca01'),'Company Superadmin retains tenant role management');
 select extensions.throws_ok($$insert into iam.roles(tenant_id,role_key,label,created_by) values('cccccccc-cccc-cccc-cccc-ccccccccca01','missing_family','Missing family',auth.uid())$$,'23514',null,'new tenant role requires an explicit Admin or Employee family');
-select extensions.throws_ok($$insert into iam.membership_roles(tenant_id,membership_id,role_id,role_version_id,granted_by) values('cccccccc-cccc-cccc-cccc-ccccccccca01','10000000-0000-0000-0000-00000000c104','60000000-0000-0000-0000-00000000c101','61000000-0000-0000-0000-00000000c101',auth.uid())$$,'42501',null,'Employee functional role cannot be assigned to Company Superadmin');
+select extensions.throws_ok($$insert into iam.membership_roles(tenant_id,membership_id,role_id,role_version_id,granted_by) values('cccccccc-cccc-cccc-cccc-ccccccccca01','10000000-0000-0000-0000-00000000c104','60000000-0000-0000-0000-00000000c101','61000000-0000-0000-0000-00000000c101',auth.uid())$$,'42501',null,'Employee functional role cannot be assigned to Company Superadmin (superadmin target guard)');
+reset role;
+alter table iam.membership_roles disable trigger a00_superadmin_target_guard;
+set local role authenticated;
+select extensions.throws_ok($$insert into iam.membership_roles(tenant_id,membership_id,role_id,role_version_id,granted_by) values('cccccccc-cccc-cccc-cccc-ccccccccca01','10000000-0000-0000-0000-00000000c104','60000000-0000-0000-0000-00000000c101','61000000-0000-0000-0000-00000000c101',auth.uid())$$,'23514',null,'Employee functional role cannot be assigned to Company Superadmin (role family guard, with the superadmin target guard disabled)');
+reset role;
+alter table iam.membership_roles enable trigger a00_superadmin_target_guard;
+set local role authenticated;
 select extensions.throws_ok($$update iam.membership_roles set role_version_id=null where id='62000000-0000-0000-0000-00000000c101'$$,'23514',null,'assignment cannot be changed to a missing published role version');
 select extensions.throws_ok($$update hse.people set tenant_id='dddddddd-dddd-dddd-dddd-dddddddddb01' where id='40000000-0000-0000-0000-00000000c101'$$,'23514',null,'People tenant ownership is immutable even for a user in both tenants');
 select extensions.throws_ok($$update hse.contractor_organizations set tenant_id='dddddddd-dddd-dddd-dddd-dddddddddb01' where id='41000000-0000-0000-0000-00000000c101'$$,'23514',null,'contractor tenant ownership is immutable');
