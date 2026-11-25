@@ -2,7 +2,7 @@
 -- Fixture: tenant A and tenant B both have the hse module and one employee with the same tenant-wide read role
 -- (inspections, findings, actions, evidence, forms, audit) and write on findings. Data exists only in tenant A.
 -- Tenant A's reader proves the policies let a legitimate reader through; tenant B's reader must still see nothing.
--- Billing tables (core.invoices, core.payments) are readable by platform operators only, so tenant readers see 0 by design.
+-- Billing tables (core.invoices, core.payments): authenticated has no direct SELECT since 047, so the tenant and operator checks below expect a privilege error.
 begin;
 grant usage on schema extensions to anon, authenticated, service_role;
 grant execute on all functions in schema extensions to anon, authenticated, service_role;
@@ -116,7 +116,7 @@ select extensions.is((select count(*)::int from hse.follow_ups where tenant_id='
 select extensions.is((select count(*)::int from hse.evidence_files where tenant_id='9a000000-0000-0000-0000-00000000000a'),1,'I19 positive control: A reader sees own hse.evidence_files');
 select extensions.is((select count(*)::int from hse.form_templates where tenant_id='9a000000-0000-0000-0000-00000000000a'),1,'I20 positive control: A reader sees own hse.form_templates');
 select extensions.is((select count(*)::int from audit.events where tenant_id='9a000000-0000-0000-0000-00000000000a' and action_key='iso.test'),1,'I21 positive control: A reader sees own audit.events');
-select extensions.is((select count(*)::int from core.invoices where tenant_id='9a000000-0000-0000-0000-00000000000a')+(select count(*)::int from core.payments where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I22 billing tables are operator-only: a tenant reader sees none');
+select extensions.ok(not has_table_privilege('authenticated','core.invoices','select') and not has_table_privilege('authenticated','core.payments','select'),'I22 billing tables: authenticated has no direct SELECT on core.invoices or core.payments (047), so a tenant reader cannot read them at all');
 with u as (update hse.findings set title='Iso finding edited' where id='97000000-0000-0000-0000-000000000001' returning 1) select extensions.is((select count(*)::int from u),1,'I23 positive control: A reader with findings.manage updates own finding');
 select extensions.throws_ok($$update audit.events set summary='{"x":1}' where tenant_id='9a000000-0000-0000-0000-00000000000a'$$,'42501',null,'I24 A reader cannot update audit events (stopped by missing UPDATE grant)');
 select extensions.throws_ok($$delete from audit.events where tenant_id='9a000000-0000-0000-0000-00000000000a'$$,'42501',null,'I25 A reader cannot delete audit events (stopped by missing DELETE grant)');
@@ -129,8 +129,8 @@ select extensions.is((select count(*)::int from hse.follow_ups where tenant_id='
 select extensions.is((select count(*)::int from hse.evidence_files where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I31 B reader cannot read A rows in hse.evidence_files');
 select extensions.is((select count(*)::int from hse.form_templates where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I32 B reader cannot read A rows in hse.form_templates');
 select extensions.is((select count(*)::int from audit.events where tenant_id='9a000000-0000-0000-0000-00000000000a' and action_key='iso.test'),0,'I33 B reader cannot read A rows in audit.events');
-select extensions.is((select count(*)::int from core.invoices where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I34 billing is operator-only: B reader sees none of A in core.invoices (not a tenant-isolation test)');
-select extensions.is((select count(*)::int from core.payments where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I35 billing is operator-only: B reader sees none of A in core.payments (not a tenant-isolation test)');
+select extensions.throws_ok($$select count(*) from core.invoices where tenant_id='9a000000-0000-0000-0000-00000000000a'$$,'42501','permission denied for table invoices','I34 billing: B reader cannot select core.invoices at all (047 privilege error, not a tenant-isolation test)');
+select extensions.throws_ok($$select count(*) from core.payments where tenant_id='9a000000-0000-0000-0000-00000000000a'$$,'42501','permission denied for table payments','I35 billing: B reader cannot select core.payments at all (047 privilege error, not a tenant-isolation test)');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009a2',true);
 select extensions.throws_ok($$update hse.findings set tenant_id='9b000000-0000-0000-0000-00000000000b' where id='97000000-0000-0000-0000-000000000001'$$,'23514','tenant_id is immutable','I36 A reader cannot move its own finding into tenant B');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009a3',true);
@@ -167,8 +167,8 @@ select extensions.is((select count(*)::int from pg_policies p where p.schemaname
 select extensions.cmp_ok((select count(*)::int from pg_policies p where p.schemaname in ('hse','core') and p.cmd in ('SELECT','ALL')),'>=',10,'I69 catalog positive control: the policy check above looks at 10 or more read policies');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000009a1',true);
 select extensions.ok(private.is_platform_operator(),'I58 same session, positive control: the caller is a platform operator, so the 0 counts below come from the boundary policy, not from a missing role');
-select extensions.is((select count(*)::int from core.invoices where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I56 operator-only billing: even a platform operator reads no invoice by direct SELECT (restrictive boundary policy from migration 025 overrides invoices_read; billing is read through functions)');
-select extensions.is((select count(*)::int from core.payments where tenant_id='9a000000-0000-0000-0000-00000000000a'),0,'I57 operator-only billing: even a platform operator reads no payment by direct SELECT (same restrictive policy)');
+select extensions.throws_ok($$select count(*) from core.invoices where tenant_id='9a000000-0000-0000-0000-00000000000a'$$,'42501','permission denied for table invoices','I56 even a platform operator cannot select core.invoices directly (047 revoked SELECT; billing is read through api.platform_read_company)');
+select extensions.throws_ok($$select count(*) from core.payments where tenant_id='9a000000-0000-0000-0000-00000000000a'$$,'42501','permission denied for table payments','I57 even a platform operator cannot select core.payments directly (047 revoked SELECT; billing is read through api.platform_read_company)');
 reset role;
 select extensions.throws_ok($$update audit.events set summary='{"x":1}' where action_key='iso.test'$$,'42501','audit events are append-only','I42 audit update blocked by the append-only trigger, even for the table owner');
 select extensions.throws_ok($$delete from audit.events where action_key='iso.test'$$,'42501','audit events are append-only','I43 audit delete blocked by the append-only trigger, even for the table owner');
