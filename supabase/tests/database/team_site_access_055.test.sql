@@ -1,7 +1,7 @@
 -- 055: a company Admin reads site_access rows of Employees of the same tenant. The test embeds the rollback (to rebuild the old state,
 -- because CI applies every migration first) and the migration (checked against the files by scripts/check_055_embed.sh). Rolled back at the end.
 begin;
-select extensions.plan(23);
+select extensions.plan(24);
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at)
 select ('c0000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','s-'||i||'@example.test',now(),now(),now() from generate_series(1,11) i;
 select private.bootstrap_platform_owner('c0000000-0000-0000-0000-000000000001');
@@ -153,5 +153,14 @@ select extensions.ok(not private.admin_can_read_employee_member('c1000000-0000-0
 select extensions.ok(not private.admin_can_read_employee_member('c1000000-0000-0000-0000-00000000000a','c2000000-0000-0000-0000-000000000010'),'T21 helper: admin of A asking about an employee of tenant B (own tenant id passed) is false');
 select set_config('request.jwt.claim.sub','c0000000-0000-0000-0000-000000000005',true);
 select extensions.ok(not private.admin_can_read_employee_member('c1000000-0000-0000-0000-00000000000a','c2000000-0000-0000-0000-000000000006'),'T20 helper: an employee caller is false');
+-- suspended tenant: an admin of a suspended company reads only its own site row
+reset role;
+select set_config('sentriq.migration_runner','on',true);
+update core.tenants set status='suspended' where id='c1000000-0000-0000-0000-00000000000a';
+select set_config('sentriq.migration_runner','off',true);
+select set_config('request.jwt.claim.sub','c0000000-0000-0000-0000-000000000003',true);
+set local role authenticated;
+select extensions.is(pg_temp.sites('c0000000-0000-0000-0000-000000000003'),'03@1','T22 an admin of a suspended tenant sees only its own site row, no employee rows');
+reset role;
 select * from extensions.finish();
 rollback;
