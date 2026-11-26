@@ -195,7 +195,7 @@ select extensions.lives_ok($$select api.revoke_invitation('48900000-0000-0000-00
 reset role;
 update iam.membership_role_sites set revoked_at=now(),revoked_by='00000000-0000-0000-0000-0000000048a0',revoke_reason='sh48 fixture' where membership_role_id='48800000-0000-0000-0000-00000000000b';
 reset role; select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000048a1',true); select set_config('request.jwt.claims','',true); set local role authenticated;
-select extensions.throws_ok($$select api.revoke_role_assignment('48a00000-0000-0000-0000-00000000000a','48800000-0000-0000-0000-00000000000b','sh48 test')$$,'42501','superadmin_target_requires_operator','R01 A cannot revoke B assignment that has org-unit scope rows only');
+select extensions.throws_ok($$select api.revoke_role_assignment('48a00000-0000-0000-0000-00000000000a','48800000-0000-0000-0000-00000000000b','sh48 test')$$,'42501','superadmin_target_requires_operator','R01 (control, passes with or without 049) A cannot revoke B assignment that has org-unit scope rows only');
 reset role;
 update iam.membership_role_org_units set revoked_at=now(),revoked_by='00000000-0000-0000-0000-0000000048a0',revoke_reason='sh48 fixture' where membership_role_id='48800000-0000-0000-0000-00000000000a';
 reset role; select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000048a1',true); select set_config('request.jwt.claims','',true); set local role authenticated;
@@ -223,9 +223,9 @@ insert into iam.membership_roles(id,tenant_id,membership_id,role_id,role_version
 reset role; select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000048a1',true); select set_config('request.jwt.claims','',true); set local role authenticated;
 select extensions.throws_ok($$select api.revoke_role_assignment('48a00000-0000-0000-0000-00000000000a','48800000-0000-0000-0000-00000000000d','sh48 test')$$,'42501','superadmin_target_requires_operator','R07 A cannot revoke B tenant-scope role assignment (role version with a tenant-scope permission, no scope rows)');
 reset role;
-update iam.membership_roles set revoked_at=now(),revoked_by='00000000-0000-0000-0000-0000000048a0',revoke_reason='sh48 fixture' where id='48800000-0000-0000-0000-00000000000d';
+insert into iam.membership_roles(id,tenant_id,membership_id,role_id,role_version_id,granted_by,revoked_at,revoked_by,revoke_reason) values ('48800000-0000-0000-0000-00000000000e','48a00000-0000-0000-0000-00000000000a','48200000-0000-0000-0000-000000000002','48700000-0000-0000-0000-000000000002','48700000-0000-0000-0000-0000000000a2','00000000-0000-0000-0000-0000000048a0',now(),'00000000-0000-0000-0000-0000000048a0','sh48 fixture (inserted already revoked, independent of R07)');
 reset role; select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000048a1',true); select set_config('request.jwt.claims','',true); set local role authenticated;
-select extensions.throws_ok($$select api.revoke_role_assignment('48a00000-0000-0000-0000-00000000000a','48800000-0000-0000-0000-00000000000d','sh48 test')$$,'42501','superadmin_target_requires_operator','R08 A cannot touch an already revoked assignment of B');
+select extensions.throws_ok($$select api.revoke_role_assignment('48a00000-0000-0000-0000-00000000000a','48800000-0000-0000-0000-00000000000e','sh48 test')$$,'42501','superadmin_target_requires_operator','R08 A cannot touch an already revoked assignment of B');
 reset role;
 insert into iam.invitations(id,tenant_id,email,token_hash,intended_level,invited_by,expires_at,origin) values ('48900000-0000-0000-0000-000000000003','48a00000-0000-0000-0000-00000000000a','sh48-inv-sa2@example.test','\x03','company_superadmin','00000000-0000-0000-0000-0000000048a0',now()+interval '1 day','platform'),('48900000-0000-0000-0000-000000000004','48a00000-0000-0000-0000-00000000000a','sh48-inv-sa3@example.test','\x04','company_superadmin','00000000-0000-0000-0000-0000000048a0',now()+interval '1 day','platform');
 reset role; select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000048a5',true); select set_config('request.jwt.claims','',true); set local role authenticated;
