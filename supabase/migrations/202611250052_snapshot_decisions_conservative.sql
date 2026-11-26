@@ -12,3 +12,4 @@
 update iam.membership_suspension_snapshots
    set decision_ids='{}', grant_ids='{}'
  where status='open' and (cardinality(decision_ids)>0 or cardinality(grant_ids)>0);
+-- drift probe
