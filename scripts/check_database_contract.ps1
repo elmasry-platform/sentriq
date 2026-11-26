@@ -144,7 +144,7 @@ if ($configToml -notmatch '(?is)\[auth\.hook\.before_user_created\]\s*enabled\s*
   throw 'supabase/config.toml must wire the before-user-created hook to private.before_user_created_hook.'
 }
 if (-not (Test-Path -LiteralPath (Join-Path $root 'scripts/signup_gate_canary.sh'))) { throw 'The signup gate canary script is missing.' }
-$expectedLatestMigration = '202611250053_direct_assignment_capability_guard.sql'
+$expectedLatestMigration = '202611250054_admin_sees_lower_members.sql'
 if ($migrations[-1].Name -ne $expectedLatestMigration) {
   throw 'The forward remediation migration is not the latest migration timestamp.'
 }
@@ -198,5 +198,20 @@ $blocks052 = [regex]::Matches($t052, '(?ms)^-- BEGIN EMBEDDED 052[^\n]*\n(.*?)^-
 if ($blocks052.Count -lt 1) { throw 'No embedded 052 block found in snapshot_conservative_052.test.sql.' }
 foreach ($blk in $blocks052) {
   if ($blk.Groups[1].Value -ne $m052) { throw 'DRIFT: an embedded 052 copy in snapshot_conservative_052.test.sql differs from the 052 migration file.' }
+}
+# Drift guard for the 054 copies embedded in the pgTAP test (same rule as scripts/check_054_embed.sh: migration and rollback; line endings normalized for the Windows runner).
+$t054 = ((Get-Content -Raw (Join-Path $root 'supabase/tests/database/team_visibility_054.test.sql')) -replace "`r`n", "`n")
+$pairs054 = @(
+  @{ Name = 'migration'; File = 'supabase/migrations/202611250054_admin_sees_lower_members.sql'; Begin = '-- BEGIN EMBEDDED 054'; End = '-- END EMBEDDED 054' },
+  @{ Name = 'rollback'; File = 'supabase/rollbacks/202611250054_admin_sees_lower_members.rollback.sql'; Begin = '-- BEGIN EMBEDDED 054 ROLLBACK'; End = '-- END EMBEDDED 054 ROLLBACK' }
+)
+foreach ($pair in $pairs054) {
+  $want054 = ((Get-Content -Raw (Join-Path $root $pair.File)) -replace "`r`n", "`n")
+  $rx054 = '(?ms)^' + [regex]::Escape($pair.Begin) + '\n(.*?)^' + [regex]::Escape($pair.End) + '$'
+  $blocks054 = [regex]::Matches($t054, $rx054)
+  if ($blocks054.Count -lt 1) { throw "No embedded 054 $($pair.Name) block found in team_visibility_054.test.sql." }
+  foreach ($blk in $blocks054) {
+    if ($blk.Groups[1].Value -ne $want054) { throw "DRIFT: an embedded 054 $($pair.Name) copy in team_visibility_054.test.sql differs from $($pair.File)." }
+  }
 }
 Write-Output "PASS: $($required.Count) base, $($remediationRequired.Count) foundation remediation, $($phase1SecurityRequired.Count) Phase 1 security markers, $($permissionCompletionRequired.Count) permission completion markers, D-30 forward remediation, P-05 catalog checks, ordered CI repeatability sequence, and $totalAssertions synchronized assertions across $($testFiles.Count) pgTAP files."
