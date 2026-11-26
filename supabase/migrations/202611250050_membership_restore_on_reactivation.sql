@@ -23,9 +23,11 @@ create table if not exists iam.membership_suspension_snapshots(
 );
 create unique index if not exists membership_suspension_snapshots_open_uidx
  on iam.membership_suspension_snapshots(tenant_id,membership_id) where status='open';
+create index if not exists membership_suspension_snapshots_membership_fk_idx on iam.membership_suspension_snapshots(membership_id);
 create index if not exists membership_suspension_snapshots_member_idx
  on iam.membership_suspension_snapshots(tenant_id,membership_id,taken_at desc);
 alter table iam.membership_suspension_snapshots enable row level security;
+alter table iam.membership_suspension_snapshots force row level security;
 revoke all on iam.membership_suspension_snapshots from anon, authenticated;
 
 create or replace function private.membership_access_digest(p_tenant uuid,p_membership uuid) returns jsonb
