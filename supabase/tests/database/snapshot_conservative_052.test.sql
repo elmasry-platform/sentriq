@@ -96,7 +96,22 @@ create function pg_temp.mem(p_m text,p_s text) returns void language plpgsql as 
 select pg_temp.mem('c2000000-0000-0000-0000-000000000010','suspended');
 select extensions.is((select cardinality(decision_ids) from iam.membership_suspension_snapshots where membership_id='c2000000-0000-0000-0000-000000000010' and status='open'),1,'S01 before 052 the open snapshot lists the suspended decision');
 -- run the real 052 migration file (not a copy)
-\ir ../../migrations/202611250052_snapshot_decisions_conservative.sql
+-- BEGIN EMBEDDED 052 (must equal supabase/migrations/202611250052_snapshot_decisions_conservative.sql byte for byte; scripts/check_052_embed.sh enforces it)
+-- 052: make the 050 backfill safe without editing 050.
+-- 050 already ran on TEST (zero suspended members then). Where 050 has not run yet (production), its backfill
+-- lists, for members that are already suspended, every decision and action grant with status 'suspended'.
+-- Before 050 nothing recorded WHY a decision was suspended, so one suspended for its own reason would come back
+-- ACTIVE when its member is reactivated. This migration empties decision_ids and grant_ids on every OPEN snapshot
+-- that exists when it runs (open = member currently suspended, snapshot not yet used).
+-- What it does for a production apply where members are already suspended:
+--   * their roles and scope rows are still restored on reactivation (digest kept);
+--   * their decisions and action grants stay suspended after reactivation, as before 050 (set them again);
+--   * members suspended AFTER this migration get the full restore (snapshot taken by the trigger).
+-- On TEST: no open snapshots, no rows change. Run it right after 050. Plain PostgreSQL, data change only on this table.
+update iam.membership_suspension_snapshots
+   set decision_ids='{}', grant_ids='{}'
+ where status='open' and (cardinality(decision_ids)>0 or cardinality(grant_ids)>0);
+-- END EMBEDDED 052
 select extensions.is((select cardinality(decision_ids)+cardinality(grant_ids) from iam.membership_suspension_snapshots where membership_id='c2000000-0000-0000-0000-000000000010' and status='open'),0,'S02 after 052 the open snapshot lists no decisions or grants');
 select extensions.is((select count(*) from iam.membership_suspension_snapshots where membership_id='c2000000-0000-0000-0000-000000000010' and status='open' and digest<>'{}'::jsonb)::int,1,'S03 the digest (roles and scope rows) is kept');
 select pg_temp.mem('c2000000-0000-0000-0000-000000000010','active');
@@ -108,7 +123,22 @@ select extensions.is((select cardinality(decision_ids) from iam.membership_suspe
 select pg_temp.mem('c2000000-0000-0000-0000-000000000009','active');
 select extensions.is((select status from iam.member_permission_decisions where id='c7000000-0000-0000-0000-0000000000a2'),'active','S07 and reactivation restores it');
 -- idempotent
-\ir ../../migrations/202611250052_snapshot_decisions_conservative.sql
+-- BEGIN EMBEDDED 052 (must equal supabase/migrations/202611250052_snapshot_decisions_conservative.sql byte for byte; scripts/check_052_embed.sh enforces it)
+-- 052: make the 050 backfill safe without editing 050.
+-- 050 already ran on TEST (zero suspended members then). Where 050 has not run yet (production), its backfill
+-- lists, for members that are already suspended, every decision and action grant with status 'suspended'.
+-- Before 050 nothing recorded WHY a decision was suspended, so one suspended for its own reason would come back
+-- ACTIVE when its member is reactivated. This migration empties decision_ids and grant_ids on every OPEN snapshot
+-- that exists when it runs (open = member currently suspended, snapshot not yet used).
+-- What it does for a production apply where members are already suspended:
+--   * their roles and scope rows are still restored on reactivation (digest kept);
+--   * their decisions and action grants stay suspended after reactivation, as before 050 (set them again);
+--   * members suspended AFTER this migration get the full restore (snapshot taken by the trigger).
+-- On TEST: no open snapshots, no rows change. Run it right after 050. Plain PostgreSQL, data change only on this table.
+update iam.membership_suspension_snapshots
+   set decision_ids='{}', grant_ids='{}'
+ where status='open' and (cardinality(decision_ids)>0 or cardinality(grant_ids)>0);
+-- END EMBEDDED 052
 select extensions.is((select count(*) from iam.membership_suspension_snapshots where status='open' and (cardinality(decision_ids)>0 or cardinality(grant_ids)>0))::int,0,'S08 running 052 again changes nothing and no open snapshot lists decisions');
 select * from extensions.finish();
 rollback;

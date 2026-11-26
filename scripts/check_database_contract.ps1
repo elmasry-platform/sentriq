@@ -191,4 +191,6 @@ foreach ($testFile in $testFiles) {
   }
   $totalAssertions += $assertions
 }
+$driftOutput = & bash (Join-Path $root 'scripts/check_052_embed.sh') 2>&1
+if ($LASTEXITCODE -ne 0) { throw "052 embedded test copy drifted from the migration: $driftOutput" }
 Write-Output "PASS: $($required.Count) base, $($remediationRequired.Count) foundation remediation, $($phase1SecurityRequired.Count) Phase 1 security markers, $($permissionCompletionRequired.Count) permission completion markers, D-30 forward remediation, P-05 catalog checks, ordered CI repeatability sequence, and $totalAssertions synchronized assertions across $($testFiles.Count) pgTAP files."
