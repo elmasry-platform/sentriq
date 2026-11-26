@@ -191,6 +191,14 @@ foreach ($testFile in $testFiles) {
   }
   $totalAssertions += $assertions
 }
+# Drift guard for the 052 copies embedded in the pgTAP test (same rule as scripts/check_052_embed.sh, line endings normalized for the Windows runner).
+$m052 = ((Get-Content -Raw (Join-Path $root 'supabase/migrations/202611250052_snapshot_decisions_conservative.sql')) -replace "`r`n", "`n")
+$t052 = ((Get-Content -Raw (Join-Path $root 'supabase/tests/database/snapshot_conservative_052.test.sql')) -replace "`r`n", "`n")
+$blocks052 = [regex]::Matches($t052, '(?ms)^-- BEGIN EMBEDDED 052[^\n]*\n(.*?)^-- END EMBEDDED 052')
+if ($blocks052.Count -lt 1) { throw 'No embedded 052 block found in snapshot_conservative_052.test.sql.' }
+foreach ($blk in $blocks052) {
+  if ($blk.Groups[1].Value -ne $m052) { throw 'DRIFT: an embedded 052 copy in snapshot_conservative_052.test.sql differs from the 052 migration file.' }
+}
 # Drift guard for the 054 copies embedded in the pgTAP test (same rule as scripts/check_054_embed.sh: migration and rollback; line endings normalized for the Windows runner).
 $t054 = ((Get-Content -Raw (Join-Path $root 'supabase/tests/database/team_visibility_054.test.sql')) -replace "`r`n", "`n")
 $pairs054 = @(
