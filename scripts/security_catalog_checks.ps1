@@ -73,6 +73,7 @@ declare
     'api.preview_invitation(text)',
     'private.can_access_core(uuid, text, uuid, boolean)',
     'private.can_access_hse(uuid, text, uuid, boolean, text, uuid)',
+    'private.admin_can_read_employee_member(uuid, uuid)',
     'private.can_access_tenant(uuid)',
     'private.can_manage_tenant(uuid)',
     'private.can_review_hse(uuid, uuid, uuid, boolean)',
