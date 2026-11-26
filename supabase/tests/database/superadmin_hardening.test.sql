@@ -4,7 +4,7 @@ begin;
 create function extensions.sh48_rows(q text) returns int language plpgsql as $f$ declare n int; begin execute q; get diagnostics n=row_count; return n; end $f$;
 grant usage on schema extensions to anon, authenticated, service_role;
 grant execute on all functions in schema extensions to anon, authenticated, service_role;
-select extensions.plan(122);
+select extensions.plan(128);
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at) values
  ('00000000-0000-0000-0000-0000000048a0','authenticated','authenticated','sh48-own@example.test','',now(),'{}','{}',now(),now()),
  ('00000000-0000-0000-0000-0000000048a1','authenticated','authenticated','sh48-a@example.test','',now(),'{}','{}',now(),now()),
@@ -192,6 +192,23 @@ reset role;
 insert into iam.invitations(id,tenant_id,email,token_hash,intended_level,invited_by,expires_at,origin) values ('48900000-0000-0000-0000-000000000005','48a00000-0000-0000-0000-00000000000a','sh48-inv-sa4@example.test','\x05','company_superadmin','00000000-0000-0000-0000-0000000048a0',now()+interval '1 day','platform');
 reset role; select set_config('request.jwt.claim.sub','',true); select set_config('request.jwt.claims','{"sub":"00000000-0000-0000-0000-0000000048a0","role":"authenticated"}',true); set local role authenticated;
 select extensions.lives_ok($$select api.revoke_invitation('48900000-0000-0000-0000-000000000005','sh48 operator test')$$,'J03 JSON-claims session: the operator can revoke a superadmin invitation');
+reset role;
+update iam.membership_role_sites set revoked_at=now(),revoked_by='00000000-0000-0000-0000-0000000048a0',revoke_reason='sh48 fixture' where membership_role_id='48800000-0000-0000-0000-00000000000b';
+reset role; select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000048a1',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.throws_ok($$select api.revoke_role_assignment('48a00000-0000-0000-0000-00000000000a','48800000-0000-0000-0000-00000000000b','sh48 test')$$,'42501','superadmin_target_requires_operator','R01 A cannot revoke B assignment that has org-unit scope rows only');
+reset role;
+update iam.membership_role_org_units set revoked_at=now(),revoked_by='00000000-0000-0000-0000-0000000048a0',revoke_reason='sh48 fixture' where membership_role_id='48800000-0000-0000-0000-00000000000a';
+reset role; select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000048a1',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.throws_ok($$select api.revoke_role_assignment('48a00000-0000-0000-0000-00000000000a','48800000-0000-0000-0000-00000000000a','sh48 test')$$,'42501','superadmin_target_requires_operator','R02 A cannot revoke own assignment that has site scope rows only (no org-unit rows)');
+reset role;
+update iam.membership_role_org_units set revoked_at=now(),revoked_by='00000000-0000-0000-0000-0000000048a0',revoke_reason='sh48 fixture' where membership_role_id='48800000-0000-0000-0000-00000000000b';
+reset role; select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000048a1',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.throws_ok($$select api.revoke_role_assignment('48a00000-0000-0000-0000-00000000000a','48800000-0000-0000-0000-00000000000b','sh48 test')$$,'42501','superadmin_target_requires_operator','R03 A cannot revoke B assignment that has no scope rows at all');
+reset role; select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000048a3',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.throws_ok($$select api.revoke_role_assignment('48a00000-0000-0000-0000-00000000000a','48800000-0000-0000-0000-00000000000b','sh48 test')$$,'42501','superadmin_target_requires_operator','R04 delegated company admin cannot revoke B assignment that has no scope rows');
+reset role; select set_config('request.jwt.claim.sub','',true); select set_config('request.jwt.claims','{"sub":"00000000-0000-0000-0000-0000000048a1","role":"authenticated"}',true); set local role authenticated;
+select extensions.throws_ok($$select api.revoke_role_assignment('48a00000-0000-0000-0000-00000000000a','48800000-0000-0000-0000-00000000000b','sh48 test')$$,'42501','superadmin_target_requires_operator','R05 JSON-claims session: A cannot revoke B assignment that has no scope rows');
+select extensions.ok((select count(*) from iam.membership_roles where membership_id='48200000-0000-0000-0000-000000000002' and revoked_at is null)=1,'R06 B assignment is still active after all refused revoke attempts');
 reset role;
 select extensions.ok((select can_write from iam.member_permissions where membership_id='48200000-0000-0000-0000-000000000002' and permission_key='hse.forms.read')=false and (select count(*) from iam.member_permissions where membership_id='48200000-0000-0000-0000-000000000002')=1,'S01 B has exactly its seeded member_permissions row');
 select extensions.ok((select count(*) from iam.membership_roles where membership_id='48200000-0000-0000-0000-000000000002' and ends_at is null and revoked_at is null)=1,'S02 B has exactly its seeded active role assignment');
