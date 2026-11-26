@@ -23,21 +23,26 @@ declare -A AREA=(
   [workspaces_view_isolation]="rls" [phase1_people_isolation]="rls" [storage_evidence_policies]="rls"
   [evidence_confirm_fix]="rls" [evidence_files_write_guards]="rls" [fk_index_and_constraint_contract]="rls"
 )
+EXPECTED_FILES=30
+# Refuse to run on an unreachable database: a PASS must never come from "nothing ran".
+if ! $PSQL $CONN -qAtX -c "select 1" >/dev/null 2>&1; then echo "RESULT: FAIL (database not reachable with the given connection)"; exit 2; fi
 printf '%-48s %-22s %6s %6s %6s %6s\n' file area plan ok notok errors
-tp=0; tok=0; bad=0
+tp=0; tok=0; bad=0; files=0
 for f in "$T"/*.test.sql; do
   b=$(basename "$f" .test.sql)
-  out=$($PSQL $CONN -qAtX -f "$f" 2>&1)
+  out=$($PSQL $CONN -qAtX -f "$f" 2>&1); rc=$?
+  files=$((files+1))
   plan=$(echo "$out" | grep -m1 -oE '^1\.\.[0-9]+' | cut -d. -f3)
   ok=$(echo "$out" | grep -cE '^ok')
   nok=$(echo "$out" | grep -ciE '^not ok')
   err=$(echo "$out" | grep -cE 'ERROR:')
   plan=${plan:-0}
   flag=""
-  if [ "$ok" -ne "$plan" ] || [ "$nok" -ne 0 ] || [ "$err" -ne 0 ]; then flag="  <== FAIL"; bad=$((bad+1)); fi
+  if [ "$rc" -ne 0 ] || [ "$plan" -eq 0 ] || [ "$ok" -ne "$plan" ] || [ "$nok" -ne 0 ] || [ "$err" -ne 0 ]; then flag="  <== FAIL"; bad=$((bad+1)); fi
   printf '%-48s %-22s %6s %6s %6s %6s%s\n' "$b" "${AREA[$b]:-UNMAPPED}" "$plan" "$ok" "$nok" "$err" "$flag"
   tp=$((tp+plan)); tok=$((tok+ok))
 done
-echo "TOTAL planned=$tp passed=$tok files_failing=$bad"
-[ "$bad" -eq 0 ] && [ "$tp" -eq "$tok" ] && { echo "RESULT: PASS"; exit 0; }
+echo "TOTAL files=$files planned=$tp passed=$tok files_failing=$bad"
+[ "$files" -eq "$EXPECTED_FILES" ] && [ "$tp" -gt 0 ] && [ "$bad" -eq 0 ] && [ "$tp" -eq "$tok" ] && { echo "RESULT: PASS"; exit 0; }
+[ "$files" -ne "$EXPECTED_FILES" ] && echo "files run=$files, expected $EXPECTED_FILES (a test file was added or removed: update EXPECTED_FILES and the area map)"
 echo "RESULT: FAIL"; exit 1

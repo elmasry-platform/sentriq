@@ -16,7 +16,7 @@ What I could not check: the production database. I have no access to it, so I do
 ## Step 0: preflight (read only, any time)
 
 1. `select max(version), count(*) from supabase_migrations.schema_migrations;` Expect 202611250044 if production is two steps behind TEST, or lower. TEST is at 202611250050 (67 rows).
-2. Run `supabase/e2e/verify_release_state.sql` against production (SELECT only). Before release it should show STATE_050 or lower for the function rows. After the release every function and trigger row must show STATE_053.
+2. Run `supabase/e2e/verify_release_state.sql` against production (SELECT only). Before release the 051-053 rows should show STATE_050 (or UNKNOWN/MISSING if production is behind 050). After the release every row must show STATE_053 or OK. The hashes were measured on PostgreSQL 16.2 and are equal on TEST (17.6); if production runs another major version, an UNKNOWN hash means compare the function text, not an automatic failure.
 3. Check for stuck states that change what 050 and 052 do: `select count(*) from iam.memberships where status='suspended';` and `select count(*) from iam.member_permission_decisions where status='suspended' and not suspended_by_tenant;` Write both numbers down. Members already suspended before 050 keep their decisions suspended after reactivation (052 behavior, see step 5).
 4. Take a restore point (Supabase backup or point-in-time marker). Record its id in the release log.
 5. Confirm the PR #14 head SHA that Reviewer approved, and that the three files for 051 to 053 hash to the values in the PR. Confirm main CI is green.
@@ -40,19 +40,67 @@ Each one runs in its own transaction with its `schema_migrations` insert (statem
 | 4 | 048 superadmin_hardening, 049 superadmin_revoke_found_fix | A company superadmin cannot change another superadmin or themselves, by direct table write or RPC. Only a platform operator can. 049 fixes the `FOUND` hole in `api.revoke_role_assignment`. | `..049..rollback.sql` then `..048..rollback.sql` |
 | 5 | 050 membership_restore_on_reactivation | Creates `iam.membership_suspension_snapshots` and the suspend/reactivate restore logic. Backfills a snapshot for each member who is already suspended. | `..050..rollback.sql` (drops the snapshot table and its data, so only roll back before members are suspended again) |
 
-## Step 6: migration 052 IMMEDIATELY after 050, same deploy
-
-052 must run right after 050 in the same deploy on production. Do not stop, release traffic or reactivate anyone between 050 and 052. Reason: 050's backfill lists every `suspended` decision and action grant of members who are already suspended. Before 050 nothing recorded why a decision was suspended, so a decision suspended for its own reason would come back ACTIVE on reactivation. 052 empties `decision_ids` and `grant_ids` on every open snapshot. Effect on production: roles and scope rows of already-suspended members still restore on reactivation. Their decisions and action grants stay suspended after reactivation, as before 050, and an operator sets them again. Members suspended after 052 get the full restore.
-Rollback: nothing to restore (the emptied lists cannot be rebuilt, and empty is the safe state).
-Because the migration runner applies versions in order, run 050 and 052 back to back; 051 sorts between them, so apply 050, 051, 052 as one uninterrupted sequence.
-
-## Step 7: migration 051, guard fixes
+## Step 6: migration 051, guard fixes (apply right after 050)
 
 Three function bodies, no table or data change: a member holding an operator-origin decision can be suspended; reset contract authorizations works for protected decisions; operator `revoke_role_assignment` skips the envelope checks (a company superadmin still goes through them). Rollback: `..051..rollback.sql`.
 
+## Step 7: migration 052, conservative snapshot decisions (apply right after 051, same uninterrupted deploy as 050)
+
+052 must run right after 050 in the same deploy on production. Apply the sequence 050, 051, 052, 053 back to back. Do not stop, release traffic or reactivate anyone between 050 and 052. Reason: 050's backfill lists every `suspended` decision and action grant of members who are already suspended. Before 050 nothing recorded why a decision was suspended, so a decision suspended for its own reason would come back ACTIVE on reactivation. 052 empties `decision_ids` and `grant_ids` on every open snapshot. Effect on production: roles and scope rows of already-suspended members still restore on reactivation. Their decisions and action grants stay suspended after reactivation, as before 050, and an operator sets them again. Members suspended after 052 get the full restore.
+Rollback: nothing to restore (the emptied lists cannot be rebuilt, and empty is the safe state).
+
 ## Step 8: migration 053, direct assignment capability guard
 
-A direct INSERT into `iam.membership_roles`, `iam.membership_role_sites`, `iam.membership_role_org_units` now honors the same capability check as `api.assign_membership_role`. A company superadmin with limited `role_assignment` capability is refused on direct inserts to the three role tables. Platform operators and migrations (session user `postgres`) are exempt. Before this step: confirm no service-role or backend code inserts into those three tables (code audit on 2026-11-26: the backend repo at 3d7b442, the UI repo and the SQL repo contain no such insert; this does not cover other clients or the production role grants). Rollback: `..053..rollback.sql` (drops the two triggers, restores the 051 function body).
+A direct INSERT into `iam.membership_roles`, `iam.membership_role_sites`, `iam.membership_role_org_units` now honors the same capability check as `api.assign_membership_role`. A company superadmin with limited `role_assignment` capability is refused on direct inserts to the three role tables. Platform operators and migrations (session user `postgres`) are exempt. Before this step: confirm no service-role or backend code inserts into those three tables (code audit on 2026-11-26: the backend repo at 3d7b442, the UI repo and the SQL repo contain no such insert; this does not cover other clients or the production role grants). Rollback: `..053..rollback.sql` (drops the two triggers, restores the 051 body of `private.guard_assigned_role_authority`).
+
+## Gate before production: TEST apply and rollback replay of 051 to 053
+
+Production must not start until 051, 052 and 053 have been applied to TEST (one transaction plus the `schema_migrations` insert with statements and rollback, as for 049 and 050), `verify_release_state.sql` on TEST shows STATE_053 on every row, and their rollbacks have been replayed (053, 052, 051 back to the STATE_050 hashes). This needs Mohamed's explicit word; it has not been given. PR #14 must be merged first so repo and TEST match.
+
+## File hashes (sha256, first 10 characters, each file ends with exactly one trailing newline)
+
+Measured by the backend agent on branch docs/release-runbook-045-053 (same bytes as PR #14 and main).
+
+| File | sha256 (10) |
+| --- | --- |
+| 045 plain migration | 2bceeeb139 |
+| 045 concurrent variant (rollouts) | 2bd97e59c3 |
+| 046 | 618f60d62d |
+| 047 | 9ddc26b524 |
+| 048 | b93845ed1a |
+| 049 | 8076d545da |
+| 050 | 0b81043466 |
+| 051 | de1f2f49dc |
+| 052 | 52418213ea |
+| 053 | 5ab0d6fb38 |
+| 045 rollback | 5e948ab2ab |
+| 046 rollback | 0b3bb5b32e |
+| 047 rollback | c493521107 |
+| 048 rollback | 78978ee40a |
+| 049 rollback | 0f252773ad |
+| 050 rollback | d15515ec75 |
+| 051 rollback | b385ef8731 |
+| 052 rollback | 91aa870f07 |
+| 053 rollback | e1bdb71d1f |
+
+Check before applying: `sha256sum <file> | cut -c1-10` must equal the table. Open point: the Reviewer's list gave 045 plain 65240a1bb0 and 045 variant 07565cdeeb, which do not equal what I measure for the files in the repo (2bceeeb139 and 2bd97e59c3). I also tried a version without the trailing newline, md5, the git blob hash and CRLF endings; none gives those values, so the Reviewer's numbers are probably from a different file copy. The two should be reconciled before production; all other values given by the Reviewer equal mine.
+
+## Sign-up gate, auto-confirm and hook: check before and after
+
+Read-only. I do not change any Auth setting (no SMTP or Auth changes are part of this release).
+1. Hook function present and callable by the auth admin role: `select has_function_privilege('supabase_auth_admin','private.before_user_created_hook(jsonb)','execute');` must be true, and the same check for `anon`, `authenticated` and `service_role` must be false. (Run `\df private.before_user_created_hook` first to confirm the exact signature on production.)
+2. Dashboard check, done by Mohamed (I have no production dashboard access): Auth, Hooks, "Before user created" is enabled and points to `private.before_user_created_hook`. In the repo `supabase/config.toml` has `enable_confirmations = false` for local only; the production auto-confirm setting is a dashboard value and must be read there. It must be OFF before real customers (see the gate list).
+3. Canary: `scripts/signup_gate_canary.sh` against the real Auth server of a non-production clone: a sign-up without an invitation is rejected, with a valid invitation it is allowed.
+4. After the release repeat 1 and 2 and confirm nothing changed.
+
+## Before real customers: gate list (each needs an owner decision, none is done by this release)
+
+1. MFA for Owner and Sub-owner accounts enabled and enforced.
+2. Auth auto-confirm turned off (email must be verified).
+3. Storage bucket size and file type limits set on the evidence bucket.
+4. Orphan cleanup for evidence objects that were uploaded but never confirmed (pending rows and stored objects).
+5. Download headers: serve uploads with `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`, never inline (046 accepts `application/octet-stream`, so the mime check is not a security control).
+6. ADR 0001, 0002 and 0003 approved by Mohamed (they are in the `ADR` folder).
 
 ## After the release
 
