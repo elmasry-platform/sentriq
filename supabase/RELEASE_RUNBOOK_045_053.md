@@ -15,7 +15,7 @@ What I could not check: the production database. I have no access to it, so I do
 
 ## Step 0: preflight (read only, any time)
 
-1. `select max(version), count(*) from supabase_migrations.schema_migrations;` Expect 202611250044 if production is two steps behind TEST, or lower. TEST is at 202611250050 (67 rows).
+1. `select max(version), count(*) from supabase_migrations.schema_migrations;` Expect 202611250044 if production is two steps behind TEST, or lower. TEST is at 202611250054 (71 rows).
 2. Run `supabase/e2e/verify_release_state.sql` against production (SELECT only). Before release the 051-053 rows should show STATE_050 (or UNKNOWN/MISSING if production is behind 050). After the release every row must show STATE_053 or OK. The hashes were measured on PostgreSQL 16.2 and are equal on TEST (17.6); if production runs another major version, an UNKNOWN hash means compare the function text, not an automatic failure.
 3. Check for stuck states that change what 050 and 052 do: `select count(*) from iam.memberships where status='suspended';` and `select count(*) from iam.member_permission_decisions where status='suspended' and not suspended_by_tenant;` Write both numbers down. Members already suspended before 050 keep their decisions suspended after reactivation (052 behavior, see step 5).
 4. Take a restore point (Supabase backup or point-in-time marker). Record its id in the release log.
@@ -53,15 +53,16 @@ Rollback: nothing to restore (the emptied lists cannot be rebuilt, and empty is 
 
 A direct INSERT into `iam.membership_roles`, `iam.membership_role_sites`, `iam.membership_role_org_units` now honors the same capability check as `api.assign_membership_role`. A company superadmin with limited `role_assignment` capability is refused on direct inserts to the three role tables. Platform operators and migrations (session user `postgres`) are exempt. Before this step: confirm no service-role or backend code inserts into those three tables (code audit on 2026-11-26: the backend repo at 3d7b442, the UI repo and the SQL repo contain no such insert; this does not cover other clients or the production role grants). Rollback: `..053..rollback.sql` (drops the two triggers, restores the 051 body of `private.guard_assigned_role_authority`).
 
-## Step 9: migration 054, company Admin sees only Employee-level members (after 053; needs its own approval, draft PR #15)
+## Step 9: migration 054, company Admin sees only Employee-level members (after 053; PR #15, merged)
 
 A company Admin sees only members whose `member_role` is `employee` (and themselves), never the Superadmin or other Admins. Applies to the Team page (`iam.memberships` read policy `membership_read`, feeding `api.v_memberships`) and to `api.company_member_permission_decisions` (for an Admin: rows of employees and self only; `granted_by_email` only when the Admin granted it). Level comes from `iam.memberships.member_role` only, so temporary permissions, delegations and grants cannot widen it. Superadmin and platform operator reads are unchanged. Adds `private.is_active_company_admin(uuid)` (execute for `authenticated` only). No data change. Source of the rule: Mohamed, message 22633562, relayed by Main; not yet approved as an ADR line. Rollback: `..054..rollback.sql` (restores the 053-state policy and function).
 Preconditions: PR #15 merged (CI green after #14: Files=31, Tests=1243), applied to TEST first (done 2026-11-26) with `verify_release_state.sql` showing STATE_054 on the 054 rows, and the 054 rollback replayed.
 
-## Gate before production: TEST apply and rollback replay of 051 to 053
+## Gate before production: TEST apply and rollback replay of 051 to 054 (done on TEST, 2026-11-26)
 
-Production must not start until 051, 052 and 053 (and 054, if it is part of the release) have been applied to TEST (one transaction plus the `schema_migrations` insert with statements and rollback, as for 049 and 050), `verify_release_state.sql` on TEST shows STATE_053 on every row, and their rollbacks have been replayed (053, 052, 051 back to the STATE_050 hashes). This needs Mohamed's explicit word; it has not been given. PR #14 must be merged first so repo and TEST match.
+Done: 051, 052 and 053 were applied to TEST in one transaction (with the `schema_migrations` rows holding statements and rollback), then 054 in its own transaction; each had a rolled-back dry run first. `verify_release_state.sql` on TEST shows STATE_053 on the 051 to 053 rows and STATE_054 on the 054 rows. The rollbacks of 053, 052 and 051 were replayed on a scratch clone (not TEST) and every 051 to 053 row went back to its STATE_050 hash. Counts before and after were equal (10 memberships, 14 suspended decisions, 1884 audit rows). 052 changes nothing on TEST data (0 snapshots).
 
+Still needed for production: Mohamed's explicit word for each production step, and the step 0 preflight on the production database.
 ## File hashes (sha256, first 10 characters, each file ends with exactly one trailing newline)
 
 Measured by the backend agent on branch docs/release-runbook-045-053 (same bytes as PR #14 and main).
@@ -78,7 +79,7 @@ Measured by the backend agent on branch docs/release-runbook-045-053 (same bytes
 | 051 | de1f2f49dc |
 | 052 | 52418213ea |
 | 053 | 5ab0d6fb38 |
-| 054 (draft PR #15) | 0ae975e92f |
+| 054 (PR #15) | 0ae975e92f |
 | 045 rollback | 5e948ab2ab |
 | 046 rollback | 0b3bb5b32e |
 | 047 rollback | c493521107 |
@@ -88,7 +89,7 @@ Measured by the backend agent on branch docs/release-runbook-045-053 (same bytes
 | 051 rollback | b385ef8731 |
 | 052 rollback | 91aa870f07 |
 | 053 rollback | e1bdb71d1f |
-| 054 rollback (draft PR #15) | a7b652c9c3 |
+| 054 rollback (PR #15) | a7b652c9c3 |
 
 Check before applying: `sha256sum <file> | cut -c1-10` must equal the table.
 
