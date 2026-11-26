@@ -4,7 +4,7 @@ begin;
 create function extensions.sh48_rows(q text) returns int language plpgsql as $f$ declare n int; begin execute q; get diagnostics n=row_count; return n; end $f$;
 grant usage on schema extensions to anon, authenticated, service_role;
 grant execute on all functions in schema extensions to anon, authenticated, service_role;
-select extensions.plan(128);
+select extensions.plan(130);
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,raw_app_meta_data,raw_user_meta_data,created_at,updated_at) values
  ('00000000-0000-0000-0000-0000000048a0','authenticated','authenticated','sh48-own@example.test','',now(),'{}','{}',now(),now()),
  ('00000000-0000-0000-0000-0000000048a1','authenticated','authenticated','sh48-a@example.test','',now(),'{}','{}',now(),now()),
@@ -214,6 +214,18 @@ select extensions.ok((select can_write from iam.member_permissions where members
 select extensions.ok((select count(*) from iam.membership_roles where membership_id='48200000-0000-0000-0000-000000000002' and ends_at is null and revoked_at is null)=1,'S02 B has exactly its seeded active role assignment');
 select extensions.ok((select count(*) from iam.site_access where membership_id='48200000-0000-0000-0000-000000000002' and active)=1 and (select count(*) from iam.org_unit_access where membership_id='48200000-0000-0000-0000-000000000002' and active)=1 and (select count(*) from iam.task_assignments where membership_id='48200000-0000-0000-0000-000000000002' and active)=1,'S03 B access rows are unchanged');
 select extensions.ok((select status from iam.memberships where id='48200000-0000-0000-0000-000000000002')='active' and (select member_role from iam.memberships where id='48200000-0000-0000-0000-000000000002')='company_superadmin','S04 B is still an active superadmin');
+reset role;
+insert into iam.roles(id,tenant_id,role_key,label,role_family,created_by) values ('48700000-0000-0000-0000-000000000002','48a00000-0000-0000-0000-00000000000a','sh48_tenant','SH48 tenant scope','admin','00000000-0000-0000-0000-0000000048a0');
+insert into iam.role_versions(id,tenant_id,role_id,version_no,role_family,status,created_by) values ('48700000-0000-0000-0000-0000000000a2','48a00000-0000-0000-0000-00000000000a','48700000-0000-0000-0000-000000000002',1,'admin','draft','00000000-0000-0000-0000-0000000048a0');
+insert into iam.role_version_permissions(role_version_id,tenant_id,permission_key,scope_kind,can_read,can_write) values ('48700000-0000-0000-0000-0000000000a2','48a00000-0000-0000-0000-00000000000a','hse.forms.read','tenant',true,false);
+update iam.role_versions set status='published', published_at=now() where id='48700000-0000-0000-0000-0000000000a2';
+insert into iam.membership_roles(id,tenant_id,membership_id,role_id,role_version_id,granted_by) values ('48800000-0000-0000-0000-00000000000d','48a00000-0000-0000-0000-00000000000a','48200000-0000-0000-0000-000000000002','48700000-0000-0000-0000-000000000002','48700000-0000-0000-0000-0000000000a2','00000000-0000-0000-0000-0000000048a0');
+reset role; select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000048a1',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.throws_ok($$select api.revoke_role_assignment('48a00000-0000-0000-0000-00000000000a','48800000-0000-0000-0000-00000000000d','sh48 test')$$,'42501','superadmin_target_requires_operator','R07 A cannot revoke B tenant-scope role assignment (role version with a tenant-scope permission, no scope rows)');
+reset role;
+update iam.membership_roles set revoked_at=now(),revoked_by='00000000-0000-0000-0000-0000000048a0',revoke_reason='sh48 fixture' where id='48800000-0000-0000-0000-00000000000d';
+reset role; select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000048a1',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.throws_ok($$select api.revoke_role_assignment('48a00000-0000-0000-0000-00000000000a','48800000-0000-0000-0000-00000000000d','sh48 test')$$,'42501','superadmin_target_requires_operator','R08 A cannot touch an already revoked assignment of B');
 reset role;
 insert into iam.invitations(id,tenant_id,email,token_hash,intended_level,invited_by,expires_at,origin) values ('48900000-0000-0000-0000-000000000003','48a00000-0000-0000-0000-00000000000a','sh48-inv-sa2@example.test','\x03','company_superadmin','00000000-0000-0000-0000-0000000048a0',now()+interval '1 day','platform'),('48900000-0000-0000-0000-000000000004','48a00000-0000-0000-0000-00000000000a','sh48-inv-sa3@example.test','\x04','company_superadmin','00000000-0000-0000-0000-0000000048a0',now()+interval '1 day','platform');
 reset role; select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-0000000048a5',true); select set_config('request.jwt.claims','',true); set local role authenticated;
