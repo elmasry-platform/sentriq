@@ -28,7 +28,7 @@ create index if not exists membership_suspension_snapshots_member_idx
  on iam.membership_suspension_snapshots(tenant_id,membership_id,taken_at desc);
 alter table iam.membership_suspension_snapshots enable row level security;
 alter table iam.membership_suspension_snapshots force row level security;
-revoke all on iam.membership_suspension_snapshots from anon, authenticated;
+revoke all on iam.membership_suspension_snapshots from anon, authenticated, service_role;
 
 create or replace function private.membership_access_digest(p_tenant uuid,p_membership uuid) returns jsonb
 language sql stable security definer set search_path='' as $$
@@ -50,7 +50,7 @@ language sql stable security definer set search_path='' as $$
   'tasks',(select coalesce(jsonb_object_agg(x.id::text,md5(to_jsonb(x)::text)),'{}'::jsonb)
      from iam.task_assignments x where x.tenant_id=p_tenant and x.membership_id=p_membership and x.active));
 $$;
-revoke all on function private.membership_access_digest(uuid,uuid) from public, anon, authenticated;
+revoke all on function private.membership_access_digest(uuid,uuid) from public, anon, authenticated, service_role;
 
 create or replace function private.take_membership_suspension_snapshot() returns trigger
 language plpgsql security definer set search_path='' as $$
@@ -66,6 +66,7 @@ begin
  end if;
  return new;
 end $$;
+revoke all on function private.take_membership_suspension_snapshot() from public, anon, authenticated, service_role;
 drop trigger if exists a_membership_suspension_snapshot on iam.memberships;
 create trigger a_membership_suspension_snapshot before update of status on iam.memberships
  for each row execute function private.take_membership_suspension_snapshot();
@@ -88,7 +89,7 @@ begin
  update iam.org_unit_access set active=false where tenant_id=p_tenant and membership_id=p_membership and active;
  update iam.task_assignments set active=false where tenant_id=p_tenant and membership_id=p_membership and active;
 end $$;
-revoke all on function private.wipe_membership_authorizations(uuid,uuid,uuid) from public, anon, authenticated;
+revoke all on function private.wipe_membership_authorizations(uuid,uuid,uuid) from public, anon, authenticated, service_role;
 
 create or replace function private.restore_membership_access(p_tenant uuid,p_membership uuid,p_snap uuid,p_actor uuid) returns jsonb
 language plpgsql security definer set search_path='' as $$
@@ -156,7 +157,7 @@ begin
  return jsonb_build_object('rows_not_restored',v_dropped,'decisions_restored',v_dec,'action_grants_restored',v_grants,
   'profiles_restored',v_prof,'protected_decisions_skipped',v_skipped_protected,'decisions_or_grants_skipped',v_skipped_invalid);
 end $$;
-revoke all on function private.restore_membership_access(uuid,uuid,uuid,uuid) from public, anon, authenticated;
+revoke all on function private.restore_membership_access(uuid,uuid,uuid,uuid) from public, anon, authenticated, service_role;
 
 create or replace function private.reset_membership_authorizations_on_reactivation() returns trigger
 language plpgsql security definer set search_path='' as $$
@@ -208,5 +209,5 @@ begin
   from iam.membership_suspension_snapshots s where s.tenant_id=p_tenant_id and s.membership_id=p_membership_id
   order by s.taken_at desc limit 5;
 end $$;
-revoke all on function api.membership_restore_report(uuid,uuid) from public, anon;
+revoke all on function api.membership_restore_report(uuid,uuid) from public, anon, service_role;
 grant execute on function api.membership_restore_report(uuid,uuid) to authenticated;
