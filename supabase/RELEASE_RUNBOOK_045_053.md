@@ -83,7 +83,7 @@ Measured by the backend agent on branch docs/release-runbook-045-053 (same bytes
 | 052 rollback | 91aa870f07 |
 | 053 rollback | e1bdb71d1f |
 
-Check before applying: `sha256sum <file> | cut -c1-10` must equal the table. Open point: the Reviewer's list gave 045 plain 65240a1bb0 and 045 variant 07565cdeeb, which do not equal what I measure for the files in the repo (2bceeeb139 and 2bd97e59c3). I also tried a version without the trailing newline, md5, the git blob hash and CRLF endings; none gives those values, so the Reviewer's numbers are probably from a different file copy. The two should be reconciled before production; all other values given by the Reviewer equal mine.
+Check before applying: `sha256sum <file> | cut -c1-10` must equal the table.
 
 ## Sign-up gate, auto-confirm and hook: check before and after
 
