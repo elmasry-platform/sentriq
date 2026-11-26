@@ -56,8 +56,8 @@ begin
  if old.status='active' and new.status='suspended' then
   update iam.membership_suspension_snapshots set status='discarded',closed_at=now(),closed_by=auth.uid()
    where tenant_id=old.tenant_id and membership_id=old.id and status='open';
-  insert into iam.membership_suspension_snapshots(tenant_id,membership_id,member_role,taken_by,digest,decision_ids,grant_ids,profile_ids)
-  values(old.tenant_id,old.id,old.member_role,auth.uid(),private.membership_access_digest(old.tenant_id,old.id),
+  insert into iam.membership_suspension_snapshots(tenant_id,membership_id,member_role,taken_at,taken_by,digest,decision_ids,grant_ids,profile_ids)
+  values(old.tenant_id,old.id,old.member_role,clock_timestamp(),auth.uid(),private.membership_access_digest(old.tenant_id,old.id),
    coalesce((select array_agg(d.id) from iam.member_permission_decisions d where d.tenant_id=old.tenant_id and d.membership_id=old.id and d.status='active'),'{}'),
    coalesce((select array_agg(g.id) from iam.permission_action_grants g where g.tenant_id=old.tenant_id and g.membership_id=old.id and g.status='active'),'{}'),
    coalesce((select array_agg(p.id) from iam.membership_permission_profiles p where p.tenant_id=old.tenant_id and p.membership_id=old.id and p.is_current),'{}'));
