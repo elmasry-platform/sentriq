@@ -1,6 +1,6 @@
 # Production release runbook: migrations 045 to 054
 
-Status: PREPARED, NOT EXECUTED. Nothing here has been run on production. 051 to 053 are not applied to TEST and PR #14 is not merged. 054 is a draft PR (#15), not merged and not applied; its test is being fixed by Data Engineer. Each step below needs Mohamed's explicit go-ahead before it is run.
+Status: PREPARED, NOT EXECUTED. Nothing here has been run on production. 051 to 053 are not applied to TEST and PR #14 is not merged. 054 is a draft PR (#15), not merged and not applied; PR #15 head f4a14ff, CI green. Each step below needs Mohamed's explicit go-ahead before it is run.
 
 What I could not check: the production database. I have no access to it, so I do not know which migrations production already has. Step 0 finds out. If production is behind 044, 040 to 044 must go first (see "Earlier migrations").
 
@@ -56,7 +56,7 @@ A direct INSERT into `iam.membership_roles`, `iam.membership_role_sites`, `iam.m
 ## Step 9: migration 054, company Admin sees only Employee-level members (after 053; needs its own approval, draft PR #15)
 
 A company Admin sees only members whose `member_role` is `employee` (and themselves), never the Superadmin or other Admins. Applies to the Team page (`iam.memberships` read policy `membership_read`, feeding `api.v_memberships`) and to `api.company_member_permission_decisions` (for an Admin: rows of employees and self only; `granted_by_email` only when the Admin granted it). Level comes from `iam.memberships.member_role` only, so temporary permissions, delegations and grants cannot widen it. Superadmin and platform operator reads are unchanged. Adds `private.is_active_company_admin(uuid)` (execute for `authenticated` only). No data change. Source of the rule: Mohamed, message 22633562, relayed by Main; not yet approved as an ADR line. Rollback: `..054..rollback.sql` (restores the 053-state policy and function).
-Preconditions: PR #15 merged and its test fixed (the CI run on 24e39c9 failed 2 "before 054" controls because they need a pre-054 database), applied to TEST first with `verify_release_state.sql` showing STATE_054 on the 054 rows, and the 054 rollback replayed.
+Preconditions: PR #15 merged (head f4a14ff, CI green; rerun after #14 merges, expect Files=31, Tests=1243), applied to TEST first with `verify_release_state.sql` showing STATE_054 on the 054 rows, and the 054 rollback replayed.
 
 ## Gate before production: TEST apply and rollback replay of 051 to 053
 

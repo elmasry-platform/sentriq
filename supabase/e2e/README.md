@@ -5,9 +5,9 @@ IMPORTANT, plainly: this is a DATABASE-level suite (PostgreSQL functions, trigge
 Two tools, both for review and runs by Reviewer, QA and Data Engineer.
 
 1. `run_agreement_suite.sh "<psql connection>"` runs all 31 pgTAP files (roles, suspend and reactivate, delegation, invitations, RLS and privileges) against a disposable database that already has all migrations (`supabase db reset --local`, or a scratch clone). Each file is its own transaction and rolls back. It prints one row per file with its area, planned and passed counts and exits 0 only on a full pass. Needs real pgTAP (the CI database has it). The script exits 2 if the database is unreachable and fails (exit 1) when psql errors, when a file plans 0 tests, when passed differs from planned, or when the number of files run is not 31. Never run it on TEST or production: the files create fixture users in `auth.users` inside the transaction.
-   Expected result at PR #14 head: 31 files, planned 1243, passed 1243, 0 failing files (same as CI "Files=31, Tests=1243 after 054 is added to the 051-053 state; Files=30, Tests=1223 before Result: PASS").
+   Expected result: 31 files, 1243 planned tests with #14 and #15; 30 files, 1223 without 054.
    The concurrency checks (`scripts/test_database_concurrency.ps1`) are separate and run in CI.
-2. `verify_release_state.sql` is SELECT only and safe on TEST and production. It reports whether function bodies, triggers, ACLs and the latest migration match state 050 or state 053. Measured: TEST today = STATE_050; a clone with 051 to 053 = STATE_053.
+2. `verify_release_state.sql` is SELECT only and safe on TEST and production. It reports whether function bodies, triggers, ACLs and the latest migration match state 050, state 053 or state 054. Measured: TEST today = STATE_050; a clone with 051 to 053 = STATE_053.
 
 ## What each area proves (agreement rules)
 
