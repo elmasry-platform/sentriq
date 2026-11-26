@@ -144,7 +144,7 @@ if ($configToml -notmatch '(?is)\[auth\.hook\.before_user_created\]\s*enabled\s*
   throw 'supabase/config.toml must wire the before-user-created hook to private.before_user_created_hook.'
 }
 if (-not (Test-Path -LiteralPath (Join-Path $root 'scripts/signup_gate_canary.sh'))) { throw 'The signup gate canary script is missing.' }
-$expectedLatestMigration = '202611250050_membership_restore_on_reactivation.sql'
+$expectedLatestMigration = '202611250053_direct_assignment_capability_guard.sql'
 if ($migrations[-1].Name -ne $expectedLatestMigration) {
   throw 'The forward remediation migration is not the latest migration timestamp.'
 }
@@ -190,5 +190,13 @@ foreach ($testFile in $testFiles) {
     throw "pgTAP plan/count mismatch in $($testFile.Name): plan=$($planMatches[0].Groups[1].Value), assertions=$assertions"
   }
   $totalAssertions += $assertions
+}
+# Drift guard for the 052 copies embedded in the pgTAP test (same rule as scripts/check_052_embed.sh, line endings normalized for the Windows runner).
+$m052 = ((Get-Content -Raw (Join-Path $root 'supabase/migrations/202611250052_snapshot_decisions_conservative.sql')) -replace "`r`n", "`n")
+$t052 = ((Get-Content -Raw (Join-Path $root 'supabase/tests/database/snapshot_conservative_052.test.sql')) -replace "`r`n", "`n")
+$blocks052 = [regex]::Matches($t052, '(?ms)^-- BEGIN EMBEDDED 052[^\n]*\n(.*?)^-- END EMBEDDED 052')
+if ($blocks052.Count -lt 1) { throw 'No embedded 052 block found in snapshot_conservative_052.test.sql.' }
+foreach ($blk in $blocks052) {
+  if ($blk.Groups[1].Value -ne $m052) { throw 'DRIFT: an embedded 052 copy in snapshot_conservative_052.test.sql differs from the 052 migration file.' }
 }
 Write-Output "PASS: $($required.Count) base, $($remediationRequired.Count) foundation remediation, $($phase1SecurityRequired.Count) Phase 1 security markers, $($permissionCompletionRequired.Count) permission completion markers, D-30 forward remediation, P-05 catalog checks, ordered CI repeatability sequence, and $totalAssertions synchronized assertions across $($testFiles.Count) pgTAP files."
