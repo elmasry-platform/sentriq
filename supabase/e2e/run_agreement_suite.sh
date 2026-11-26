@@ -21,9 +21,9 @@ declare -A AREA=(
   [entitlements_rbac]="rls" [dynamic_member_entitlements]="rls" [dynamic_member_entitlements_company_deny]="rls"
   [dynamic_member_entitlements_review]="rls" [hse_billing_audit_isolation]="rls" [billing_tables_no_direct_select]="rls"
   [workspaces_view_isolation]="rls" [phase1_people_isolation]="rls" [storage_evidence_policies]="rls"
-  [evidence_confirm_fix]="rls" [evidence_files_write_guards]="rls" [fk_index_and_constraint_contract]="rls"
+  [team_visibility_054]="rls" [evidence_confirm_fix]="rls" [evidence_files_write_guards]="rls" [fk_index_and_constraint_contract]="rls"
 )
-EXPECTED_FILES=30
+EXPECTED_FILES=31
 # Refuse to run on an unreachable database: a PASS must never come from "nothing ran".
 if ! $PSQL $CONN -qAtX -c "select 1" >/dev/null 2>&1; then echo "RESULT: FAIL (database not reachable with the given connection)"; exit 2; fi
 printf '%-48s %-22s %6s %6s %6s %6s\n' file area plan ok notok errors

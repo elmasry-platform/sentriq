@@ -1,6 +1,6 @@
-# Production release runbook: migrations 045 to 053
+# Production release runbook: migrations 045 to 054
 
-Status: PREPARED, NOT EXECUTED. Nothing here has been run on production. 051 to 053 are not applied to TEST and PR #14 is not merged. Each step below needs Mohamed's explicit go-ahead before it is run.
+Status: PREPARED, NOT EXECUTED. Nothing here has been run on production. 051 to 053 are not applied to TEST and PR #14 is not merged. 054 is a draft PR (#15), not merged and not applied; its test is being fixed by Data Engineer. Each step below needs Mohamed's explicit go-ahead before it is run.
 
 What I could not check: the production database. I have no access to it, so I do not know which migrations production already has. Step 0 finds out. If production is behind 044, 040 to 044 must go first (see "Earlier migrations").
 
@@ -53,9 +53,14 @@ Rollback: nothing to restore (the emptied lists cannot be rebuilt, and empty is 
 
 A direct INSERT into `iam.membership_roles`, `iam.membership_role_sites`, `iam.membership_role_org_units` now honors the same capability check as `api.assign_membership_role`. A company superadmin with limited `role_assignment` capability is refused on direct inserts to the three role tables. Platform operators and migrations (session user `postgres`) are exempt. Before this step: confirm no service-role or backend code inserts into those three tables (code audit on 2026-11-26: the backend repo at 3d7b442, the UI repo and the SQL repo contain no such insert; this does not cover other clients or the production role grants). Rollback: `..053..rollback.sql` (drops the two triggers, restores the 051 body of `private.guard_assigned_role_authority`).
 
+## Step 9: migration 054, company Admin sees only Employee-level members (after 053; needs its own approval, draft PR #15)
+
+A company Admin sees only members whose `member_role` is `employee` (and themselves), never the Superadmin or other Admins. Applies to the Team page (`iam.memberships` read policy `membership_read`, feeding `api.v_memberships`) and to `api.company_member_permission_decisions` (for an Admin: rows of employees and self only; `granted_by_email` only when the Admin granted it). Level comes from `iam.memberships.member_role` only, so temporary permissions, delegations and grants cannot widen it. Superadmin and platform operator reads are unchanged. Adds `private.is_active_company_admin(uuid)` (execute for `authenticated` only). No data change. Source of the rule: Mohamed, message 22633562, relayed by Main; not yet approved as an ADR line. Rollback: `..054..rollback.sql` (restores the 053-state policy and function).
+Preconditions: PR #15 merged and its test fixed (the CI run on 24e39c9 failed 2 "before 054" controls because they need a pre-054 database), applied to TEST first with `verify_release_state.sql` showing STATE_054 on the 054 rows, and the 054 rollback replayed.
+
 ## Gate before production: TEST apply and rollback replay of 051 to 053
 
-Production must not start until 051, 052 and 053 have been applied to TEST (one transaction plus the `schema_migrations` insert with statements and rollback, as for 049 and 050), `verify_release_state.sql` on TEST shows STATE_053 on every row, and their rollbacks have been replayed (053, 052, 051 back to the STATE_050 hashes). This needs Mohamed's explicit word; it has not been given. PR #14 must be merged first so repo and TEST match.
+Production must not start until 051, 052 and 053 (and 054, if it is part of the release) have been applied to TEST (one transaction plus the `schema_migrations` insert with statements and rollback, as for 049 and 050), `verify_release_state.sql` on TEST shows STATE_053 on every row, and their rollbacks have been replayed (053, 052, 051 back to the STATE_050 hashes). This needs Mohamed's explicit word; it has not been given. PR #14 must be merged first so repo and TEST match.
 
 ## File hashes (sha256, first 10 characters, each file ends with exactly one trailing newline)
 
@@ -73,6 +78,7 @@ Measured by the backend agent on branch docs/release-runbook-045-053 (same bytes
 | 051 | de1f2f49dc |
 | 052 | 52418213ea |
 | 053 | 5ab0d6fb38 |
+| 054 (draft PR #15) | 0ae975e92f |
 | 045 rollback | 5e948ab2ab |
 | 046 rollback | 0b3bb5b32e |
 | 047 rollback | c493521107 |
@@ -82,6 +88,7 @@ Measured by the backend agent on branch docs/release-runbook-045-053 (same bytes
 | 051 rollback | b385ef8731 |
 | 052 rollback | 91aa870f07 |
 | 053 rollback | e1bdb71d1f |
+| 054 rollback (draft PR #15) | a7b652c9c3 |
 
 Check before applying: `sha256sum <file> | cut -c1-10` must equal the table.
 
@@ -111,7 +118,7 @@ Read-only. I do not change any Auth setting (no SMTP or Auth changes are part of
 
 ## Rollback order if something goes wrong
 
-Reverse order, one at a time, stopping at the first step that restores service: 053, 052 (no-op), 051, 050, 049, 048, 047, 046, then 045's indexes. Each rollback file is stored in `schema_migrations.rollback` for that version on TEST; do the same on production. Delete the matching `schema_migrations` row in the same transaction.
+Reverse order, one at a time, stopping at the first step that restores service: 054 (if applied), 053, 052 (no-op), 051, 050, 049, 048, 047, 046, then 045's indexes. Each rollback file is stored in `schema_migrations.rollback` for that version on TEST; do the same on production. Delete the matching `schema_migrations` row in the same transaction.
 
 ## Not in this release
 
