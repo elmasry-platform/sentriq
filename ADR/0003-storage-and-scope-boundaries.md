@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | PROPOSED — AWAITING OWNER APPROVAL |
+| Status | APPROVED by Mohamed, 2026-11-26 (Telegram 23418049) |
 | Decision date | 2026-11-20 |
 | Scope | HSE evidence and authorization scope model; no storage integration is changed by this ADR. |
 
