@@ -181,7 +181,7 @@ begin
     closed_at=now(),closed_by=v_actor,outcome=coalesce(v_out,'{}'::jsonb)||jsonb_build_object('mode',case when v_restored then 'restored' else 'clean_slate' end)
     where id=s.id;
    insert into audit.events(tenant_id,actor_user_id,actor_membership_id,scope_kind,action_key,record_type,record_id,summary)
-   values(new.tenant_id,v_actor,new.id,'tenant','iam.membership.access_restore','iam.memberships',new.id,
+   values(new.tenant_id,v_actor,null,'tenant','iam.membership.access_restore','iam.memberships',new.id,
     coalesce(v_out,'{}'::jsonb)||jsonb_build_object('mode',case when v_restored then 'restored' else 'clean_slate' end,'snapshot_id',s.id));
   end if;
  end if;
