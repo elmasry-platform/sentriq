@@ -52,3 +52,7 @@ Service-role and postgres sessions bypass RLS. Use them only for workflows that 
 ## Consequences
 
 Laravel owns request ergonomics and orchestration, but PostgreSQL remains the final row boundary. Database constraints protect relationships and immutable workflow facts even when a caller reaches the database without the expected UI. The chosen model reuses the current Supabase Auth/RLS shape and supports future Operations data under the same tenant boundary, with separate permission keys and module entitlements. The F-01 table-write bypass is closed in the follow-up database branch; the application still must bind service-role actor UUIDs to verified identities before relying on the invitation state machine in production.
+
+## Proposed, not approved: team visibility for company Admins
+
+Admin sees only Employee-level members; level comes from member_role only. Source: Mohamed, message 22633562 (relayed by Main). Status: UNAPPROVED, shown here so the migration (054, draft PR #15) can be reviewed against it. Do not treat as an accepted decision until Mohamed approves this ADR.
