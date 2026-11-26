@@ -144,7 +144,7 @@ if ($configToml -notmatch '(?is)\[auth\.hook\.before_user_created\]\s*enabled\s*
   throw 'supabase/config.toml must wire the before-user-created hook to private.before_user_created_hook.'
 }
 if (-not (Test-Path -LiteralPath (Join-Path $root 'scripts/signup_gate_canary.sh'))) { throw 'The signup gate canary script is missing.' }
-$expectedLatestMigration = '202611250047_revoke_billing_table_select.sql'
+$expectedLatestMigration = '202611250049_superadmin_revoke_found_fix.sql'
 if ($migrations[-1].Name -ne $expectedLatestMigration) {
   throw 'The forward remediation migration is not the latest migration timestamp.'
 }
