@@ -191,6 +191,12 @@ foreach ($testFile in $testFiles) {
   }
   $totalAssertions += $assertions
 }
-$driftOutput = & bash (Join-Path $root 'scripts/check_052_embed.sh') 2>&1
-if ($LASTEXITCODE -ne 0) { throw "052 embedded test copy drifted from the migration: $driftOutput" }
+# Drift guard for the 052 copies embedded in the pgTAP test (same rule as scripts/check_052_embed.sh, line endings normalized for the Windows runner).
+$m052 = ((Get-Content -Raw (Join-Path $root 'supabase/migrations/202611250052_snapshot_decisions_conservative.sql')) -replace "`r`n", "`n")
+$t052 = ((Get-Content -Raw (Join-Path $root 'supabase/tests/database/snapshot_conservative_052.test.sql')) -replace "`r`n", "`n")
+$blocks052 = [regex]::Matches($t052, '(?ms)^-- BEGIN EMBEDDED 052[^\n]*\n(.*?)^-- END EMBEDDED 052')
+if ($blocks052.Count -lt 1) { throw 'No embedded 052 block found in snapshot_conservative_052.test.sql.' }
+foreach ($blk in $blocks052) {
+  if ($blk.Groups[1].Value -ne $m052) { throw 'DRIFT: an embedded 052 copy in snapshot_conservative_052.test.sql differs from the 052 migration file.' }
+}
 Write-Output "PASS: $($required.Count) base, $($remediationRequired.Count) foundation remediation, $($phase1SecurityRequired.Count) Phase 1 security markers, $($permissionCompletionRequired.Count) permission completion markers, D-30 forward remediation, P-05 catalog checks, ordered CI repeatability sequence, and $totalAssertions synchronized assertions across $($testFiles.Count) pgTAP files."
