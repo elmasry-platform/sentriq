@@ -94,41 +94,44 @@ revoke all on function private.wipe_membership_authorizations(uuid,uuid,uuid) fr
 create or replace function private.restore_membership_access(p_tenant uuid,p_membership uuid,p_snap uuid,p_actor uuid) returns jsonb
 language plpgsql security definer set search_path='' as $$
 declare s iam.membership_suspension_snapshots%rowtype; v_reason text:='Not restored: changed or invalid after suspension';
- v_dropped int:=0; v_n int; v_dec int:=0; v_grants int:=0; v_prof int:=0; v_skipped_protected int:=0; v_skipped_invalid int:=0;
+ v_dropped int:=0; v_changed int:=0; v_invalid int:=0; v_n int; v_dec int:=0; v_grants int:=0; v_prof int:=0; v_skipped_protected int:=0; v_skipped_invalid int:=0;
 begin
  select * into s from iam.membership_suspension_snapshots where id=p_snap;
- -- roles: keep only unchanged, still valid ones
+ -- roles: first rows that changed or were added, then rows that are no longer valid
  update iam.membership_roles r set revoked_at=now(),revoked_by=p_actor,revoke_reason=v_reason
   where r.tenant_id=p_tenant and r.membership_id=p_membership and r.revoked_at is null
-   and (s.digest->'roles'->>(r.id::text) is distinct from md5(to_jsonb(r)::text)
-    or not exists(select 1 from iam.roles ro where ro.id=r.role_id and ro.tenant_id=r.tenant_id and ro.active)
+   and s.digest->'roles'->>(r.id::text) is distinct from md5(to_jsonb(r)::text);
+ get diagnostics v_n=row_count; v_changed:=v_changed+v_n;
+ update iam.membership_roles r set revoked_at=now(),revoked_by=p_actor,revoke_reason=v_reason
+  where r.tenant_id=p_tenant and r.membership_id=p_membership and r.revoked_at is null
+   and (not exists(select 1 from iam.roles ro where ro.id=r.role_id and ro.tenant_id=r.tenant_id and ro.active)
     or not exists(select 1 from iam.role_versions v where v.id=r.role_version_id and v.tenant_id=r.tenant_id and v.status='published')
     or not private.decision_source_valid(r.source_delegation_id,r.tenant_id));
- get diagnostics v_n=row_count; v_dropped:=v_dropped+v_n;
+ get diagnostics v_n=row_count; v_invalid:=v_invalid+v_n;
  update iam.membership_role_sites x set revoked_at=now(),revoked_by=p_actor,revoke_reason=v_reason
   where x.tenant_id=p_tenant and x.revoked_at is null
    and x.membership_role_id in (select id from iam.membership_roles where tenant_id=p_tenant and membership_id=p_membership)
    and (s.digest->'role_sites'->>(x.id::text) is distinct from md5(to_jsonb(x)::text)
     or not exists(select 1 from iam.membership_roles r where r.id=x.membership_role_id and r.revoked_at is null));
- get diagnostics v_n=row_count; v_dropped:=v_dropped+v_n;
+ get diagnostics v_n=row_count; v_changed:=v_changed+v_n;
  update iam.membership_role_org_units x set revoked_at=now(),revoked_by=p_actor,revoke_reason=v_reason
   where x.tenant_id=p_tenant and x.revoked_at is null
    and x.membership_role_id in (select id from iam.membership_roles where tenant_id=p_tenant and membership_id=p_membership)
    and (s.digest->'role_orgs'->>(x.id::text) is distinct from md5(to_jsonb(x)::text)
     or not exists(select 1 from iam.membership_roles r where r.id=x.membership_role_id and r.revoked_at is null));
- get diagnostics v_n=row_count; v_dropped:=v_dropped+v_n;
+ get diagnostics v_n=row_count; v_changed:=v_changed+v_n;
  update iam.member_permissions x set active=false where x.tenant_id=p_tenant and x.membership_id=p_membership and x.active
   and s.digest->'permissions'->>(x.id::text) is distinct from md5(to_jsonb(x)::text);
- get diagnostics v_n=row_count; v_dropped:=v_dropped+v_n;
+ get diagnostics v_n=row_count; v_changed:=v_changed+v_n;
  update iam.site_access x set active=false where x.tenant_id=p_tenant and x.membership_id=p_membership and x.active
   and s.digest->'sites'->>(x.site_id::text) is distinct from md5(to_jsonb(x)::text);
- get diagnostics v_n=row_count; v_dropped:=v_dropped+v_n;
+ get diagnostics v_n=row_count; v_changed:=v_changed+v_n;
  update iam.org_unit_access x set active=false where x.tenant_id=p_tenant and x.membership_id=p_membership and x.active
   and s.digest->'orgs'->>(x.org_unit_id::text) is distinct from md5(to_jsonb(x)::text);
- get diagnostics v_n=row_count; v_dropped:=v_dropped+v_n;
+ get diagnostics v_n=row_count; v_changed:=v_changed+v_n;
  update iam.task_assignments x set active=false where x.tenant_id=p_tenant and x.membership_id=p_membership and x.active
   and s.digest->'tasks'->>(x.id::text) is distinct from md5(to_jsonb(x)::text);
- get diagnostics v_n=row_count; v_dropped:=v_dropped+v_n;
+ get diagnostics v_n=row_count; v_changed:=v_changed+v_n;
  -- decisions and action grants that the suspension set to 'suspended'
  update iam.member_permission_decisions d set status='active'
   where d.tenant_id=p_tenant and d.membership_id=p_membership and d.id=any(s.decision_ids)
@@ -154,18 +157,19 @@ begin
    and not exists(select 1 from iam.membership_permission_profiles c where c.tenant_id=p.tenant_id and c.membership_id=p.membership_id
      and c.role_family=p.role_family and c.is_current);
  get diagnostics v_prof=row_count;
- return jsonb_build_object('rows_not_restored',v_dropped,'decisions_restored',v_dec,'action_grants_restored',v_grants,
+ return jsonb_build_object('rows_not_restored',v_changed+v_invalid,'not_restored_changed_or_added',v_changed,'not_restored_invalid_role_or_source',v_invalid,'decisions_restored',v_dec,'action_grants_restored',v_grants,
   'profiles_restored',v_prof,'protected_decisions_skipped',v_skipped_protected,'decisions_or_grants_skipped',v_skipped_invalid);
 end $$;
 revoke all on function private.restore_membership_access(uuid,uuid,uuid,uuid) from public, anon, authenticated, service_role;
 
 create or replace function private.reset_membership_authorizations_on_reactivation() returns trigger
 language plpgsql security definer set search_path='' as $$
-declare v_actor uuid:=coalesce(auth.uid(),new.user_id); s iam.membership_suspension_snapshots%rowtype; v_out jsonb; v_restored boolean:=false;
+declare v_actor uuid:=coalesce(auth.uid(),new.user_id); s iam.membership_suspension_snapshots%rowtype; v_out jsonb; v_restored boolean:=false; v_have_snap boolean:=false;
 begin
  if old.status is distinct from 'active' and new.status='active' then
   select * into s from iam.membership_suspension_snapshots where tenant_id=new.tenant_id and membership_id=new.id and status='open' for update;
-  if found and old.status='suspended' and s.member_role=new.member_role then
+  v_have_snap:=found;
+  if v_have_snap and old.status='suspended' and s.member_role=new.member_role then
    begin
     v_out:=private.restore_membership_access(new.tenant_id,new.id,s.id,v_actor);
     v_restored:=true;
@@ -176,7 +180,7 @@ begin
   if not v_restored then
    perform private.wipe_membership_authorizations(new.tenant_id,new.id,v_actor);
   end if;
-  if found then
+  if v_have_snap then
    update iam.membership_suspension_snapshots set status=case when v_restored then 'restored' else 'discarded' end,
     closed_at=now(),closed_by=v_actor,outcome=coalesce(v_out,'{}'::jsonb)||jsonb_build_object('mode',case when v_restored then 'restored' else 'clean_slate' end)
     where id=s.id;
