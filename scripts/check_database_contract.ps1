@@ -144,7 +144,7 @@ if ($configToml -notmatch '(?is)\[auth\.hook\.before_user_created\]\s*enabled\s*
   throw 'supabase/config.toml must wire the before-user-created hook to private.before_user_created_hook.'
 }
 if (-not (Test-Path -LiteralPath (Join-Path $root 'scripts/signup_gate_canary.sh'))) { throw 'The signup gate canary script is missing.' }
-$expectedLatestMigration = '202611250050_membership_restore_on_reactivation.sql'
+$expectedLatestMigration = '202611250054_admin_sees_lower_members.sql'
 if ($migrations[-1].Name -ne $expectedLatestMigration) {
   throw 'The forward remediation migration is not the latest migration timestamp.'
 }
@@ -190,5 +190,13 @@ foreach ($testFile in $testFiles) {
     throw "pgTAP plan/count mismatch in $($testFile.Name): plan=$($planMatches[0].Groups[1].Value), assertions=$assertions"
   }
   $totalAssertions += $assertions
+}
+# Drift guard for the 054 copy embedded in the pgTAP test (same rule as scripts/check_054_embed.sh, line endings normalized for the Windows runner).
+$m054 = ((Get-Content -Raw (Join-Path $root 'supabase/migrations/202611250054_admin_sees_lower_members.sql')) -replace "`r`n", "`n")
+$t054 = ((Get-Content -Raw (Join-Path $root 'supabase/tests/database/team_visibility_054.test.sql')) -replace "`r`n", "`n")
+$blocks054 = [regex]::Matches($t054, '(?ms)^-- BEGIN EMBEDDED 054[^\n]*\n(.*?)^-- END EMBEDDED 054')
+if ($blocks054.Count -lt 1) { throw 'No embedded 054 block found in team_visibility_054.test.sql.' }
+foreach ($blk in $blocks054) {
+  if ($blk.Groups[1].Value -ne $m054) { throw 'DRIFT: an embedded 054 copy in team_visibility_054.test.sql differs from the 054 migration file.' }
 }
 Write-Output "PASS: $($required.Count) base, $($remediationRequired.Count) foundation remediation, $($phase1SecurityRequired.Count) Phase 1 security markers, $($permissionCompletionRequired.Count) permission completion markers, D-30 forward remediation, P-05 catalog checks, ordered CI repeatability sequence, and $totalAssertions synchronized assertions across $($testFiles.Count) pgTAP files."

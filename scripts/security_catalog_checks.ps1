@@ -77,6 +77,7 @@ declare
     'private.can_manage_tenant(uuid)',
     'private.can_review_hse(uuid, uuid, uuid, boolean)',
     'private.current_membership_id(uuid)',
+    'private.is_active_company_admin(uuid)',
     'private.is_platform_operator()',
     'private.is_platform_owner()',
     'private.phase1_membership(uuid)',
