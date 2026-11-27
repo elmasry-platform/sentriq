@@ -82,8 +82,7 @@ declare
     'private.is_platform_operator()',
     'private.is_platform_owner()',
     'private.phase1_membership(uuid)',
-    'private.phase1_permission_allowed(uuid, text, uuid, uuid, boolean, text, uuid)',
-    'private.validate_form_definition(jsonb, text[], jsonb)'
+    'private.phase1_permission_allowed(uuid, text, uuid, uuid, boolean, text, uuid)'
   ];
   v_expected_service text[] := array[
     'api.accept_invitation(text, uuid)',
