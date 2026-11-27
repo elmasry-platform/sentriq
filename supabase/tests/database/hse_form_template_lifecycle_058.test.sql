@@ -2,7 +2,7 @@
 -- The test embeds the rollback (to rebuild the old state, because CI applies every migration first) and the migration
 -- (checked against the files by scripts/check_058_embed.sh). Rolled back at the end.
 begin;
-select extensions.plan(102);
+select extensions.plan(105);
 grant usage on schema extensions to anon, authenticated, service_role;
 grant execute on all functions in schema extensions to anon, authenticated, service_role;
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at) select ('e0000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','m-'||i||'@example.test',now(),now(),now() from generate_series(1,7) i;
@@ -522,7 +522,8 @@ select extensions.is((api.form_save_draft(current_setting('t58.a')::uuid,3,'{"en
 select extensions.is(((select status from hse.form_templates where id=current_setting('t58.a')::uuid)), 'draft', 'L24 the reopened template is a draft');
 select api.form_submit_for_approval(current_setting('t58.a')::uuid,4,'v2: count title');
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000003',true); select set_config('request.jwt.claims','',true); set local role authenticated;
-select extensions.is((api.form_approve_publish(current_setting('t58.a')::uuid,4)), 2, 'L25 version 2 published by a different approver');
+select extensions.lives_ok($$select api.form_approve_publish(current_setting('t58.a')::uuid,4)$$, 'L25 a different approver publishes the second version');
+select extensions.is(((select max(version) from hse.form_versions where template_id=current_setting('t58.a')::uuid)), 2, 'L25b the server numbered the new version 2');
 select extensions.is(((select count(*)::int from hse.form_versions where template_id=current_setting('t58.a')::uuid)), 2, 'L26 two versions exist and version 1 is unchanged');
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000002',true); select set_config('request.jwt.claims','',true); set local role authenticated;
 select api.form_save_draft(current_setting('t58.a')::uuid,4,'{"en":"Fire","ar":"حريق"}','Safety',extensions.d58c());
@@ -592,6 +593,15 @@ insert into hse.form_templates(id,tenant_id,title,category,status,revision,defin
 select extensions.is(((select count(*)::int from hse.form_templates where status in ('in_approval','retired') and id::text like 'e5000000%')), 2, 'L58 DB admin can create rows in the new statuses (no user, unguarded)');
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000003',true); select set_config('request.jwt.claims','',true); set local role authenticated;
 select extensions.throws_ok($$select api.form_approve_publish('e5000000-0000-0000-0000-000000000009',1)$$, '22023', 'form_validation_failed', 'L64 approval revalidates, so an invalid in-approval row cannot be published');
+reset role; select set_config('request.jwt.claim.sub','',true); select set_config('request.jwt.claims','',true);
+insert into hse.form_templates(id,tenant_id,title,category,status,revision,definition,owner_membership_id,created_by) values ('e5000000-0000-0000-0000-00000000000c','e1000000-0000-0000-0000-00000000000a','{"en":"Ap"}','t','in_approval',1,'{}','e2000000-0000-0000-0000-000000000002','e0000000-0000-0000-0000-000000000002');
+insert into hse.form_versions(tenant_id,template_id,version,snapshot,published_by,approved_by,approved_at) values ('e1000000-0000-0000-0000-00000000000a','e5000000-0000-0000-0000-00000000000c',1,'{}','e0000000-0000-0000-0000-000000000005','e0000000-0000-0000-0000-000000000005',now());
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000003',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.throws_ok($$update hse.form_templates set status='published' where id='e5000000-0000-0000-0000-00000000000c'$$, '42501', 'form_publish_requires_approval', 'L66 a version approved by someone else cannot be used to publish (approved_by is checked)');
+reset role; select set_config('request.jwt.claim.sub','',true); select set_config('request.jwt.claims','',true);
+insert into hse.form_versions(tenant_id,template_id,version,snapshot,published_by,approved_by,approved_at) values ('e1000000-0000-0000-0000-00000000000a','e5000000-0000-0000-0000-00000000000c',2,'{}','e0000000-0000-0000-0000-000000000003','e0000000-0000-0000-0000-000000000003',now());
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000003',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.lives_ok($$update hse.form_templates set status='published' where id='e5000000-0000-0000-0000-00000000000c'$$, 'L67 positive control: a version approved by the caller in the same step allows publish');
 reset role; select set_config('request.jwt.claim.sub','',true); select set_config('request.jwt.claims','',true);
 -- BEGIN EMBEDDED 058 ROLLBACK
 -- Rollback of 058: drop the API, guards and helpers, map the new statuses back (in_approval -> draft, retired -> archived),
