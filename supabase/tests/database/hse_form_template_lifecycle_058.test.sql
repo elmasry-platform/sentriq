@@ -2,7 +2,7 @@
 -- The test embeds the rollback (to rebuild the old state, because CI applies every migration first) and the migration
 -- (checked against the files by scripts/check_058_embed.sh). Rolled back at the end.
 begin;
-select extensions.plan(167);
+select extensions.plan(171);
 grant usage on schema extensions to anon, authenticated, service_role;
 grant execute on all functions in schema extensions to anon, authenticated, service_role;
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at) select ('e0000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','m-'||i||'@example.test',now(),now(),now() from generate_series(1,8) i;
@@ -797,6 +797,10 @@ select extensions.lives_ok($$update hse.form_templates set status='published' wh
 reset role; select set_config('request.jwt.claim.sub','',true); select set_config('request.jwt.claims','',true);
 select extensions.is((array_to_string(private.form_runnable_types(), ',')), 'short_text,long_text,integer,decimal,date,time,datetime,boolean,single_select,multi_select,photo,file,attestation,signature,instruction,gps,calculated', 'T01 the runnable types are pinned (scripts/check_form_type_parity.py compares them with the runner)');
 select extensions.is(((select array_to_string(array(select t from unnest(private.form_field_types()) t where t <> all (private.form_runnable_types())), ','))), 'reference,user,site,location,barcode_qr,repeat_group', 'T02 exactly these builder types are blocked at publish');
+select extensions.is(((select count(*)::int from pg_proc where pronamespace='api'::regnamespace and proname='form_set_status')), 1, 'S01 api.form_set_status exists once: the old 3-argument call and the new 4-argument call resolve to the same function');
+select extensions.is(((select pronargs::int||'-'||pronargdefaults::int from pg_proc where pronamespace='api'::regnamespace and proname='form_set_status')), '4-1', 'S02 four arguments, one default (p_reason)');
+select extensions.is(((select (summary->>'reason' is null)::text||'-'||(summary ? 'reason')::text from audit.events where record_id=current_setting('t58.a')::uuid and action_key='hse.form_templates.status.retired')), 'true-true', 'S03 a 3-argument call (old caller, L47 retire) works and audits no reason');
+select extensions.is(((select summary->>'reason' from audit.events where record_id=current_setting('t58.r')::uuid and action_key='hse.form_templates.status.archived')), 'no longer needed', 'S04 a 4-argument call (E02) audits the reason given');
 reset role; select set_config('request.jwt.claim.sub','',true); select set_config('request.jwt.claims','',true);
 select extensions.is(((select s->>'from'||'>'||(s->>'to')||'|'||(s->>'reason') from (select summary s from audit.events where record_id=current_setting('t58.a')::uuid and action_key='hse.form_templates.status.draft' and summary->>'reason'='fix the wording') x)), 'in_approval>draft|fix the wording', 'AU01 a return is audited with old status, new status and the reason');
 select extensions.is(((select count(*)::int from audit.events where record_id=current_setting('t58.a')::uuid and action_key='hse.form_templates.status.retired' and actor_user_id is not null and actor_membership_id is not null and created_at is not null)), 1, 'AU02 a retire is audited with actor, membership and time');
