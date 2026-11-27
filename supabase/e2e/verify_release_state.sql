@@ -6,6 +6,7 @@
 -- different major version as 'compare the function text', not as a failure by itself. Only ACL, trigger and count rows are version independent.
 -- Rows from 046 to 049 and 045 must be the same before and after 051-053 (they do not change in this release).
 -- State 054 rows are only expected after migration 054 (STATE_053 on them before it is normal).
+-- State 055 rows are only expected after migration 055 (STATE_054 on them before it is normal).
 with fn(name, h050, h053) as (values
   ('api.membership_restore_report(uuid,uuid)','511c70f6f3','511c70f6f3'),
   ('api.revoke_role_assignment(uuid,uuid,text)','21247eb117','83fd57226d'),
@@ -27,8 +28,8 @@ rows_acl as (
          coalesce((select bool_or(has_function_privilege(r,p.oid,'execute'))::text from pg_proc p, unnest(array['anon','authenticated','service_role']) r where p.proname in ('guard_assigned_role_authority','guard_role_scope_row_authority','guard_decision_authority')),'n/a'),
          case when coalesce((select bool_or(has_function_privilege(r,p.oid,'execute')) from pg_proc p, unnest(array['anon','authenticated','service_role']) r where p.proname in ('guard_assigned_role_authority','guard_role_scope_row_authority','guard_decision_authority')),false) then 'FAIL' else 'OK' end),
 rows_mig as (
-  select 'latest recorded migration', '202611250050', '202611250053 (054 after its release)', coalesce((select max(version) from supabase_migrations.schema_migrations),'none'),
-         case (select max(version) from supabase_migrations.schema_migrations) when '202611250054' then 'STATE_054' when '202611250053' then 'STATE_053' when '202611250050' then 'STATE_050' else 'OTHER' end),
+  select 'latest recorded migration', '202611250050', '202611250053 (054, 055 after their release)', coalesce((select max(version) from supabase_migrations.schema_migrations),'none'),
+         case (select max(version) from supabase_migrations.schema_migrations) when '202611250055' then 'STATE_055' when '202611250054' then 'STATE_054' when '202611250053' then 'STATE_053' when '202611250050' then 'STATE_050' else 'OTHER' end),
 rows_snap as (
   select 'suspended members vs snapshots (info)', null::text, null::text,
          (select count(*) from iam.memberships where status='suspended')::text||' suspended, '||(select count(*) from iam.membership_suspension_snapshots)::text||' snapshots', 'INFO'),
@@ -75,10 +76,24 @@ rows_054acl as (
          coalesce(has_function_privilege('authenticated',to_regprocedure('private.is_active_company_admin(uuid)'),'execute')::text||','||has_function_privilege('anon',to_regprocedure('private.is_active_company_admin(uuid)'),'execute')::text||','||has_function_privilege('service_role',to_regprocedure('private.is_active_company_admin(uuid)'),'execute')::text,'not installed'),
          case when to_regprocedure('private.is_active_company_admin(uuid)') is null then 'STATE_053'
               when has_function_privilege('authenticated',to_regprocedure('private.is_active_company_admin(uuid)'),'execute') and not has_function_privilege('anon',to_regprocedure('private.is_active_company_admin(uuid)'),'execute') and not has_function_privilege('service_role',to_regprocedure('private.is_active_company_admin(uuid)'),'execute') then 'OK' else 'FAIL' end),
+rows_055 as (
+  select r.k, r.h054, r.h055, r.actual,
+         case when r.actual is not distinct from r.h055 then 'STATE_055' when r.actual is not distinct from r.h054 then 'STATE_054' else 'UNKNOWN' end
+  from (
+    select 'function private.admin_can_read_employee_member(uuid,uuid)' k, null::text h054, '415965337b' h055,
+           (select h from actual where name='private.admin_can_read_employee_member(uuid,uuid)') actual
+    union all
+    select 'policy iam.site_access site_access_read (md5 of qual+cmd+permissive)', '325543db4b', '72a9d7a1c8',
+           (select left(md5(pg_get_expr(polqual,polrelid)||polcmd::text||polpermissive::text),10) from pg_policy where polrelid='iam.site_access'::regclass and polname='site_access_read')) r),
+rows_055acl as (
+  select '055 private.admin_can_read_employee_member: authenticated yes, anon no, service_role no', null::text, 'true,false,false',
+         coalesce(has_function_privilege('authenticated',to_regprocedure('private.admin_can_read_employee_member(uuid,uuid)'),'execute')::text||','||has_function_privilege('anon',to_regprocedure('private.admin_can_read_employee_member(uuid,uuid)'),'execute')::text||','||has_function_privilege('service_role',to_regprocedure('private.admin_can_read_employee_member(uuid,uuid)'),'execute')::text,'not installed'),
+         case when to_regprocedure('private.admin_can_read_employee_member(uuid,uuid)') is null then 'STATE_054'
+              when has_function_privilege('authenticated',to_regprocedure('private.admin_can_read_employee_member(uuid,uuid)'),'execute') and not has_function_privilege('anon',to_regprocedure('private.admin_can_read_employee_member(uuid,uuid)'),'execute') and not has_function_privilege('service_role',to_regprocedure('private.admin_can_read_employee_member(uuid,uuid)'),'execute') then 'OK' else 'FAIL' end),
 rows_snaprls as (
   select '050 snapshot table: RLS on, forced, no privileges for anon, authenticated, service_role', null::text, 'on,forced,false,false,false,false',
          c.relrowsecurity::text||','||c.relforcerowsecurity::text||','||has_table_privilege('anon','iam.membership_suspension_snapshots','select')::text||','||has_table_privilege('authenticated','iam.membership_suspension_snapshots','select')::text||','||has_table_privilege('authenticated','iam.membership_suspension_snapshots','insert')::text||','||has_table_privilege('service_role','iam.membership_suspension_snapshots','select')::text,
          case when to_regclass('iam.membership_suspension_snapshots') is null then 'MISSING' when c.relrowsecurity and c.relforcerowsecurity and not has_table_privilege('anon','iam.membership_suspension_snapshots','select') and not has_table_privilege('authenticated','iam.membership_suspension_snapshots','select') and not has_table_privilege('authenticated','iam.membership_suspension_snapshots','insert') and not has_table_privilege('service_role','iam.membership_suspension_snapshots','select') then 'OK' else 'FAIL' end
   from pg_class c where c.oid=to_regclass('iam.membership_suspension_snapshots'))
 select * from rows_fn union all select * from rows_trg union all select * from rows_acl union all select * from rows_mig union all select * from rows_snap
-union all select * from rows_old union all select * from rows_048 union all select * from rows_047 union all select * from rows_046 union all select * from rows_045 union all select * from rows_050acl union all select * from rows_snaprls union all select * from rows_054 union all select * from rows_054acl;
+union all select * from rows_old union all select * from rows_048 union all select * from rows_047 union all select * from rows_046 union all select * from rows_045 union all select * from rows_050acl union all select * from rows_snaprls union all select * from rows_054 union all select * from rows_054acl union all select * from rows_055 union all select * from rows_055acl;
