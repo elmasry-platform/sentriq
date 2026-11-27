@@ -235,7 +235,7 @@ $captured = $sql | & docker exec -i $container psql -X -qAt -v ON_ERROR_STOP=1 -
 $exitCode = $LASTEXITCODE
 $output = $captured -join "`n"
 if ($exitCode -ne 0) {
-  $safeError = $output.Replace([char]13, '').Replace([char]10, '%0A')
+  $safeError = $output.Replace([string][char]13, '').Replace([string][char]10, '%0A')
   Write-Output "::error title=Security catalog SQL failure::$safeError"
   throw "Security catalog checks failed: $output"
 }
