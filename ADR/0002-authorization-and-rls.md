@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | PROPOSED — AWAITING OWNER APPROVAL |
+| Status | APPROVED as direction by Mohamed, 2026-11-26 (Telegram 23418049). Items under 'Acceptance tests before production' and the MFA requirement are NOT implemented. |
 | Decision date | 2026-11-20 |
 | Scope | Authorization responsibility and database identity context; no authorization behavior is changed by this ADR. |
 
@@ -53,6 +53,10 @@ Service-role and postgres sessions bypass RLS. Use them only for workflows that 
 
 Laravel owns request ergonomics and orchestration, but PostgreSQL remains the final row boundary. Database constraints protect relationships and immutable workflow facts even when a caller reaches the database without the expected UI. The chosen model reuses the current Supabase Auth/RLS shape and supports future Operations data under the same tenant boundary, with separate permission keys and module entitlements. The F-01 table-write bypass is closed in the follow-up database branch; the application still must bind service-role actor UUIDs to verified identities before relying on the invitation state machine in production.
 
-## Proposed, not approved: team visibility for company Admins
+## Approved: team visibility for company Admins
 
-Admin sees only Employee-level members; level comes from member_role only. Source: Mohamed, message 22633562 (relayed by Main). Status: UNAPPROVED, shown here so the migration (054, draft PR #15) can be reviewed against it. Do not treat as an accepted decision until Mohamed approves this ADR.
+Admin sees only Employee-level members; level comes from member_role only. Source: Mohamed, message 22633562 (relayed by Main). Status: APPROVED by Mohamed, 2026-11-26 (Telegram 23418049). Implemented by migration 054 (PR #15), applied to TEST on 2026-11-26.
+
+## Log
+
+- 2026-11-26: migrations 051, 052 and 053 were applied to TEST in one transaction, then 054 (company Admin sees only Employee-level members) in its own transaction. 052 is a no-op on TEST data (0 snapshots). Production is not changed.
