@@ -2,7 +2,7 @@
 -- The test embeds the rollback (to rebuild the old state, because CI applies every migration first) and the migration
 -- (checked against the files by scripts/check_059_embed.sh). Needs 058 applied. Rolled back at the end.
 begin;
-select extensions.plan(29);
+select extensions.plan(33);
 grant usage on schema extensions to anon, authenticated, service_role;
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at) select ('e0000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','m-'||i||'@example.test',now(),now(),now() from generate_series(1,8) i;
 select private.bootstrap_platform_owner('e0000000-0000-0000-0000-000000000001');
@@ -93,7 +93,7 @@ reset role;
 -- Catalog only. No iam.roles or role_permissions change: company superadmins get the new keys by the
 -- default full access rule, everyone else stays denied until a profile or decision grants them.
 -- Publishing a form now needs hse.forms.approve (write) on top of hse.forms.manage. Moving a published form to
--- retired or archived needs hse.forms.retire (write); draft to archived stays on manage. The approver may not be the
+-- retired or archived needs hse.forms.retire (write); draft to archived stays on manage. Both need a reason (api.form_set_status p_reason), kept in the audit event. The approver may not be the
 -- creator, the last editor or the submitter. Both are checked inside the guards, so direct table writes are covered too.
 -- No feature rows and no feature link: the new keys are not tied to a feature, so no tenant loses access.
 -- Roll back with supabase/rollbacks/202611250059_hse_form_permission_keys.rollback.sql.
@@ -123,6 +123,8 @@ begin
   if not v_ok then raise exception 'form_status_transition_not_allowed' using errcode = '23514', detail = old.status || ' to ' || new.status; end if;
   if old.status = 'published' and new.status in ('retired','archived') and not private.can_access_hse(new.tenant_id, 'hse.forms.retire', null, true) then
     raise exception 'form_retire_not_permitted' using errcode = '42501'; end if;
+  if old.status = 'published' and new.status in ('retired','archived') and nullif(btrim(coalesce(current_setting('sentriq.form_reason', true), '')), '') is null then
+    raise exception 'form_reason_required' using errcode = '23514'; end if;
   v_content := row(new.title, new.category, new.definition, new.languages) is distinct from row(old.title, old.category, old.definition, old.languages);
   if v_content and old.status = 'in_approval' then raise exception 'form_locked_in_approval' using errcode = '23514'; end if;
   if v_content and new.status <> 'draft' then raise exception 'form_content_change_requires_draft' using errcode = '23514'; end if;
@@ -228,12 +230,20 @@ select extensions.throws_ok($$select api.form_set_status(current_setting('t59.y'
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000004',true); select set_config('request.jwt.claims','',true); set local role authenticated;
 select extensions.throws_ok($$select api.form_set_status(current_setting('t59.y')::uuid,1,'archived')$$, '42501', 'form_retire_not_permitted', 'B04 manage without retire cannot archive a published form');
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000002',true); select set_config('request.jwt.claims','',true); set local role authenticated;
-select extensions.lives_ok($$select api.form_set_status(current_setting('t59.y')::uuid,1,'archived')$$, 'B04a with retire (superadmin, no deny) the published form is archived');
+select extensions.throws_ok($$select api.form_set_status(current_setting('t59.y')::uuid,1,'archived',' ')$$, '23514', 'form_reason_required', 'B04c archiving a published form needs a reason');
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000002',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.throws_ok($$select api.form_set_status(current_setting('t59.y')::uuid,1,'archived')$$, '23514', 'form_reason_required', 'B04d no reason at all is refused too');
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000002',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.lives_ok($$select api.form_set_status(current_setting('t59.y')::uuid,1,'archived','superseded')$$, 'B04a with retire (superadmin, no deny) the published form is archived');
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000004',true); select set_config('request.jwt.claims','',true); set local role authenticated;
 select set_config('t59.z', api.form_create_draft('e1000000-0000-0000-0000-00000000000a','{"en":"Z","ar":"ز"}','Safety',extensions.d59())::text, true);
 select extensions.lives_ok($$select api.form_set_status(current_setting('t59.z')::uuid,1,'archived')$$, 'B04b draft to archived stays on forms.manage (employee without retire)');
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000002',true); select set_config('request.jwt.claims','',true); set local role authenticated;
-select extensions.lives_ok($$select api.form_set_status(current_setting('t59.x')::uuid,1,'retired')$$, 'B05 positive control: a superadmin without the deny retires');
+select extensions.throws_ok($$select api.form_set_status(current_setting('t59.x')::uuid,1,'retired')$$, '23514', 'form_reason_required', 'B05a retiring a published form needs a reason');
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000002',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.lives_ok($$select api.form_set_status(current_setting('t59.x')::uuid,1,'retired','replaced by a newer form')$$, 'B05 positive control: a superadmin without the deny retires');
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000002',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.is(((select summary->>'reason' from audit.events where record_id=current_setting('t59.x')::uuid and action_key='hse.form_templates.status.retired')), 'replaced by a newer form', 'B05b the retire is audited with its reason');
 select extensions.is(((select status from hse.form_templates where id=current_setting('t59.x')::uuid)), 'retired', 'B06 template X is retired');
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000005',true); select set_config('request.jwt.claims','',true); set local role authenticated;
 select extensions.lives_ok($$select api.form_set_status(current_setting('t59.x')::uuid,1,'draft')$$, 'B07 restoring a retired template needs only forms.manage');

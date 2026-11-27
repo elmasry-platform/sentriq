@@ -2,7 +2,7 @@
 -- Catalog only. No iam.roles or role_permissions change: company superadmins get the new keys by the
 -- default full access rule, everyone else stays denied until a profile or decision grants them.
 -- Publishing a form now needs hse.forms.approve (write) on top of hse.forms.manage. Moving a published form to
--- retired or archived needs hse.forms.retire (write); draft to archived stays on manage. The approver may not be the
+-- retired or archived needs hse.forms.retire (write); draft to archived stays on manage. Both need a reason (api.form_set_status p_reason), kept in the audit event. The approver may not be the
 -- creator, the last editor or the submitter. Both are checked inside the guards, so direct table writes are covered too.
 -- No feature rows and no feature link: the new keys are not tied to a feature, so no tenant loses access.
 -- Roll back with supabase/rollbacks/202611250059_hse_form_permission_keys.rollback.sql.
@@ -32,6 +32,8 @@ begin
   if not v_ok then raise exception 'form_status_transition_not_allowed' using errcode = '23514', detail = old.status || ' to ' || new.status; end if;
   if old.status = 'published' and new.status in ('retired','archived') and not private.can_access_hse(new.tenant_id, 'hse.forms.retire', null, true) then
     raise exception 'form_retire_not_permitted' using errcode = '42501'; end if;
+  if old.status = 'published' and new.status in ('retired','archived') and nullif(btrim(coalesce(current_setting('sentriq.form_reason', true), '')), '') is null then
+    raise exception 'form_reason_required' using errcode = '23514'; end if;
   v_content := row(new.title, new.category, new.definition, new.languages) is distinct from row(old.title, old.category, old.definition, old.languages);
   if v_content and old.status = 'in_approval' then raise exception 'form_locked_in_approval' using errcode = '23514'; end if;
   if v_content and new.status <> 'draft' then raise exception 'form_content_change_requires_draft' using errcode = '23514'; end if;
