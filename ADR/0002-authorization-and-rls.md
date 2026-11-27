@@ -57,6 +57,10 @@ Laravel owns request ergonomics and orchestration, but PostgreSQL remains the fi
 
 Admin sees only Employee-level members; level comes from member_role only. Source: Mohamed, message 22633562 (relayed by Main). Status: APPROVED by Mohamed, 2026-11-26 (Telegram 23418049). Implemented by migration 054 (PR #15), applied to TEST on 2026-11-26.
 
+## Proposed for approval record: site assignments of Employee-level members for company Admins
+
+Admin reads site assignments of Employee-level members of the same tenant; level comes from member_role only; the granted_by user id on those rows is visible to the Admin. Source: Mohamed, message 23424402 (relayed by Main), yes. Implemented by migration 055 (PR #18). Status: not yet applied to TEST at the time of writing; this line is updated when it is applied.
+
 ## Log
 
 - 2026-11-26: migrations 051, 052 and 053 were applied to TEST in one transaction, then 054 (company Admin sees only Employee-level members) in its own transaction. 052 is a no-op on TEST data (0 snapshots). Production is not changed.

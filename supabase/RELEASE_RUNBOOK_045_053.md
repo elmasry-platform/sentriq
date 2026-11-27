@@ -1,4 +1,4 @@
-# Production release runbook: migrations 045 to 054
+# Production release runbook: migrations 045 to 055
 
 Status: PREPARED, NOT EXECUTED on production. Nothing here has been run on production. On TEST, 051 to 054 were applied on 2026-11-26 (Mohamed's approval), and PR #14 and PR #15 are merged; the production release still needs Mohamed's explicit go-ahead for each step.
 
@@ -58,6 +58,11 @@ A direct INSERT into `iam.membership_roles`, `iam.membership_role_sites`, `iam.m
 A company Admin sees only members whose `member_role` is `employee` (and themselves), never the Superadmin or other Admins. Applies to the Team page (`iam.memberships` read policy `membership_read`, feeding `api.v_memberships`) and to `api.company_member_permission_decisions` (for an Admin: rows of employees and self only; `granted_by_email` only when the Admin granted it). Level comes from `iam.memberships.member_role` only, so temporary permissions, delegations and grants cannot widen it. Superadmin and platform operator reads are unchanged. Adds `private.is_active_company_admin(uuid)` (execute for `authenticated` only). No data change. Source of the rule: Mohamed, message 22633562, relayed by Main; not yet approved as an ADR line. Rollback: `..054..rollback.sql` (restores the 053-state policy and function).
 Preconditions: PR #15 merged (CI green after #14: Files=31, Tests=1243), applied to TEST first (done 2026-11-26) with `verify_release_state.sql` showing STATE_054 on the 054 rows, and the 054 rollback replayed.
 
+## Step 10: migration 055, company Admin reads site assignments of Employee-level members (after 054; PR #18)
+
+A company Admin can read `iam.site_access` rows of Employee-level members of the same company (and their own rows), never Superadmin rows, never other Admin rows, never another company. Level comes from `iam.memberships.member_role` only, so temporary permissions, delegations and grants cannot widen it. Read only: `site_access_insert` and `site_access_update` are not touched. Effect: `api.v_memberships."siteIds"` now returns the employees' site ids for an Admin. Adds `private.admin_can_read_employee_member(uuid,uuid)` (execute for authenticated only, not anon, not service_role), replaces policy `site_access_read`. Independent of 054. No data change. Rollback: `supabase/rollbacks/202611250055_admin_reads_employee_site_access.rollback.sql`.
+Preconditions: PR #18 merged (CI Files=32, Tests=1267), applied to TEST first with `verify_release_state.sql` showing STATE_055 on the 055 rows, and the 055 rollback replayed. Visible `granted_by` user ids on site rows are readable by the Admin for those employee rows.
+
 ## Gate before production: TEST apply and rollback replay of 051 to 054 (done on TEST, 2026-11-26)
 
 Done: 051, 052 and 053 were applied to TEST in one transaction (with the `schema_migrations` rows holding statements and rollback), then 054 in its own transaction; each had a rolled-back dry run first. `verify_release_state.sql` on TEST shows STATE_053 on the 051 to 053 rows and STATE_054 on the 054 rows. The rollbacks of 053, 052 and 051 were replayed on a scratch clone (not TEST) and every 051 to 053 row went back to its STATE_050 hash. Counts before and after were equal (10 memberships, 14 suspended decisions, 1884 audit rows). 052 changes nothing on TEST data (0 snapshots).
@@ -90,6 +95,8 @@ Measured by the backend agent on branch docs/release-runbook-045-053 (same bytes
 | 052 rollback | 91aa870f07 |
 | 053 rollback | e1bdb71d1f |
 | 054 rollback (PR #15) | a7b652c9c3 |
+| 055 (PR #18) | 6e7e11a6e0 |
+| 055 rollback (PR #18) | b54e2b17d2 |
 
 Check before applying: `sha256sum <file> | cut -c1-10` must equal the table.
 
@@ -119,7 +126,7 @@ Read-only. I do not change any Auth setting (no SMTP or Auth changes are part of
 
 ## Rollback order if something goes wrong
 
-Reverse order, one at a time, stopping at the first step that restores service: 054 (if applied), 053, 052 (no-op), 051, 050, 049, 048, 047, 046, then 045's indexes. Each rollback file is stored in `schema_migrations.rollback` for that version on TEST; do the same on production. Delete the matching `schema_migrations` row in the same transaction.
+Reverse order, one at a time, stopping at the first step that restores service: 055 (if applied), 054 (if applied), 053, 052 (no-op), 051, 050, 049, 048, 047, 046, then 045's indexes. Each rollback file is stored in `schema_migrations.rollback` for that version on TEST; do the same on production. Delete the matching `schema_migrations` row in the same transaction.
 
 ## Not in this release
 
