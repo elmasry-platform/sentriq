@@ -82,7 +82,8 @@ declare
     'private.is_platform_operator()',
     'private.is_platform_owner()',
     'private.phase1_membership(uuid)',
-    'private.phase1_permission_allowed(uuid, text, uuid, uuid, boolean, text, uuid)'
+    'private.phase1_permission_allowed(uuid, text, uuid, uuid, boolean, text, uuid)',
+    'private.validate_form_definition(jsonb, text[], jsonb)'
   ];
   v_expected_service text[] := array[
     'api.accept_invitation(text, uuid)',
@@ -235,7 +236,7 @@ $captured = $sql | & docker exec -i $container psql -X -qAt -v ON_ERROR_STOP=1 -
 $exitCode = $LASTEXITCODE
 $output = $captured -join "`n"
 if ($exitCode -ne 0) {
-  $safeError = $output.Replace([char]13, '').Replace([char]10, '%0A')
+  $safeError = $output.Replace([string][char]13, '').Replace([string][char]10, '%0A')
   Write-Output "::error title=Security catalog SQL failure::$safeError"
   throw "Security catalog checks failed: $output"
 }
