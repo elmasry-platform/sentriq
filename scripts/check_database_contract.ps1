@@ -144,7 +144,7 @@ if ($configToml -notmatch '(?is)\[auth\.hook\.before_user_created\]\s*enabled\s*
   throw 'supabase/config.toml must wire the before-user-created hook to private.before_user_created_hook.'
 }
 if (-not (Test-Path -LiteralPath (Join-Path $root 'scripts/signup_gate_canary.sh'))) { throw 'The signup gate canary script is missing.' }
-$expectedLatestMigration = '202611250055_admin_reads_employee_site_access.sql'
+$expectedLatestMigration = '202611250056_evidence_bucket_limits.sql'
 if ($migrations[-1].Name -ne $expectedLatestMigration) {
   throw 'The forward remediation migration is not the latest migration timestamp.'
 }
@@ -227,6 +227,21 @@ foreach ($pair in $pairs055) {
   if ($blocks055.Count -lt 1) { throw "No embedded 055 $($pair.Name) block found in team_site_access_055.test.sql." }
   foreach ($blk in $blocks055) {
     if ($blk.Groups[1].Value -ne $want055) { throw "DRIFT: an embedded 055 $($pair.Name) copy in team_site_access_055.test.sql differs from $($pair.File)." }
+  }
+}
+# Drift guard for the 056 copies embedded in the pgTAP test (migration and rollback; line endings normalized).
+$t056 = ((Get-Content -Raw (Join-Path $root 'supabase/tests/database/evidence_bucket_limits_056.test.sql')) -replace "`r`n", "`n")
+$pairs056 = @(
+  @{ Name = 'migration'; File = 'supabase/migrations/202611250056_evidence_bucket_limits.sql'; Begin = '-- BEGIN EMBEDDED 056'; End = '-- END EMBEDDED 056' },
+  @{ Name = 'rollback'; File = 'supabase/rollbacks/202611250056_evidence_bucket_limits.rollback.sql'; Begin = '-- BEGIN EMBEDDED 056 ROLLBACK'; End = '-- END EMBEDDED 056 ROLLBACK' }
+)
+foreach ($pair in $pairs056) {
+  $want056 = ((Get-Content -Raw (Join-Path $root $pair.File)) -replace "`r`n", "`n")
+  $rx056 = '(?ms)^' + [regex]::Escape($pair.Begin) + '\n(.*?)^' + [regex]::Escape($pair.End) + '$'
+  $blocks056 = [regex]::Matches($t056, $rx056)
+  if ($blocks056.Count -lt 1) { throw "No embedded 056 $($pair.Name) block found in evidence_bucket_limits_056.test.sql." }
+  foreach ($blk in $blocks056) {
+    if ($blk.Groups[1].Value -ne $want056) { throw "DRIFT: an embedded 056 $($pair.Name) copy in evidence_bucket_limits_056.test.sql differs from $($pair.File)." }
   }
 }
 Write-Output "PASS: $($required.Count) base, $($remediationRequired.Count) foundation remediation, $($phase1SecurityRequired.Count) Phase 1 security markers, $($permissionCompletionRequired.Count) permission completion markers, D-30 forward remediation, P-05 catalog checks, ordered CI repeatability sequence, and $totalAssertions synchronized assertions across $($testFiles.Count) pgTAP files."
