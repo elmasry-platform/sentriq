@@ -38,26 +38,45 @@ create or replace function private.form_field_types() returns text[] language sq
   select array['short_text','long_text','integer','decimal','date','time','datetime','boolean','single_select','multi_select','reference','user','site','location','photo','file','attestation','signature','instruction','gps','barcode_qr','calculated','repeat_group']
 $f$;
 
+-- Types the inspection runner can answer today. The others stay in the builder list but are refused at submit and approval,
+-- until the runner defines how to fill them. Add a type here in the same release as its runner support.
+create or replace function private.form_runnable_types() returns text[] language sql immutable set search_path = '' as $f$
+  select array['short_text','long_text','integer','decimal','date','time','datetime','boolean','single_select','multi_select','photo','file','attestation','signature','instruction','gps','calculated']
+$f$;
+grant execute on function private.form_runnable_types() to authenticated;
+
 -- Server-side publish check. Returns a jsonb array of {code, question_id?, detail?}; empty array = valid.
 -- A subset of the client validateForm (same rules for ids, structure, types, choices, bounds, rules and formulas, cycles, 150 cap);
 -- parity with the client is checked with shared fixtures in the submission step (M03).
+-- Safe number from config text: digits only, at most 12 digits, else null. Avoids cast overflow on hostile input.
+create or replace function private.form_num(p text) returns bigint language sql immutable set search_path = '' as $f$
+  select case when p ~ '^\d{1,12}$' then p::bigint end
+$f$;
+grant execute on function private.form_num(text) to authenticated;
+
 create or replace function private.validate_form_definition(p_title jsonb, p_languages text[], p_definition jsonb) returns jsonb
-language plpgsql stable security definer set search_path = '' as $f$
+language plpgsql stable set search_path = '' as $f$
 declare
   v_err jsonb := '[]'::jsonb;
   v_secs jsonb; v_qs jsonb; v_q jsonb; v_s jsonb; v_c jsonb; v_ch jsonb;
   v_lang text; v_id text; v_type text; v_n int; v_cfg jsonb; v_qids text[]; v_sids text[];
-  v_min numeric; v_max numeric; v_rest text; v_ref text; v_cnt int;
+  v_min numeric; v_max numeric; v_a bigint; v_b bigint; v_rest text; v_ref text; v_cnt int;
   v_ops text[] := array['equals','not_equals','contains','greater_than','less_than','is_empty','is_not_empty'];
   v_effects text[] := array['show','hide','require','require_evidence'];
 begin
   if p_languages is null or cardinality(p_languages) < 1 or not (p_languages <@ array['en','ar']) then
     return jsonb_build_array(private.form_err('languages_invalid'));
   end if;
+  if octet_length(p_definition::text) > 1048576 then
+    return jsonb_build_array(private.form_err('definition_too_large'));
+  end if;
   if p_definition is null or jsonb_typeof(p_definition) <> 'object'
      or jsonb_typeof(coalesce(p_definition->'sections', '[]'::jsonb)) <> 'array'
      or jsonb_typeof(coalesce(p_definition->'questions', '[]'::jsonb)) <> 'array' then
     return jsonb_build_array(private.form_err('definition_shape_invalid'));
+  end if;
+  if jsonb_array_length(coalesce(p_definition->'questions', '[]'::jsonb)) > 300 or jsonb_array_length(coalesce(p_definition->'sections', '[]'::jsonb)) > 100 then
+    return jsonb_build_array(private.form_err('too_many_questions'));
   end if;
   v_secs := coalesce(p_definition->'sections', '[]'::jsonb);
   v_qs := coalesce(p_definition->'questions', '[]'::jsonb);
@@ -88,6 +107,7 @@ begin
   for v_q in select * from jsonb_array_elements(v_qs) loop
     v_id := v_q->>'id'; v_type := v_q->>'type'; v_cfg := coalesce(v_q->'config', '{}'::jsonb);
     if not (v_type = any (private.form_field_types())) then v_err := v_err || private.form_err('question_type_invalid', v_id, v_type); continue; end if;
+    if not (v_type = any (private.form_runnable_types())) then v_err := v_err || private.form_err('question_type_not_supported', v_id, v_type); end if;
     if not ((v_q->>'sectionId') = any (v_sids)) then v_err := v_err || private.form_err('question_section_missing', v_id);
     elsif not exists (select 1 from jsonb_array_elements(v_secs) s where s->>'id' = v_q->>'sectionId' and coalesce(s->'questionIds', '[]'::jsonb) ? v_id) then
       v_err := v_err || private.form_err('question_not_in_section', v_id); end if;
@@ -110,19 +130,21 @@ begin
       exception when others then v_err := v_err || private.form_err('numeric_bounds_invalid', v_id); v_min := null; v_max := null; end;
       if v_min is not null and v_max is not null and v_min > v_max then v_err := v_err || private.form_err('numeric_min_above_max', v_id); end if;
     end if;
-    if v_type = 'decimal' and (coalesce(v_cfg->>'precision', '') !~ '^\d+$' or (v_cfg->>'precision')::int > 10) then v_err := v_err || private.form_err('decimal_precision_invalid', v_id); end if;
+    if v_type = 'decimal' and (private.form_num(v_cfg->>'precision') is null or private.form_num(v_cfg->>'precision') > 10) then v_err := v_err || private.form_err('decimal_precision_invalid', v_id); end if;
     if v_type in ('short_text','long_text') then
-      if coalesce(v_cfg->>'maxLength', '') !~ '^\d+$' or coalesce(v_cfg->>'maxLength', '0')::int < 1 or coalesce(v_cfg->>'minLength', '0') !~ '^\d+$'
-         or coalesce(v_cfg->>'minLength', '0')::int > coalesce(nullif(v_cfg->>'maxLength', ''), '0')::int then v_err := v_err || private.form_err('text_length_invalid', v_id); end if;
+      v_a := private.form_num(v_cfg->>'maxLength'); v_b := private.form_num(coalesce(nullif(v_cfg->>'minLength', ''), '0'));
+      if v_a is null or v_a < 1 or v_b is null or v_b > v_a then v_err := v_err || private.form_err('text_length_invalid', v_id); end if;
     end if;
     if v_type in ('photo','file') then
-      if coalesce(v_cfg->>'maxFiles', '') !~ '^\d+$' or coalesce(v_cfg->>'maxFiles', '0')::int < 1 then v_err := v_err || private.form_err('file_count_invalid', v_id); end if;
-      if coalesce(v_cfg->>'maxBytes', '') !~ '^\d+$' or coalesce(v_cfg->>'maxBytes', '0')::bigint < 1
-         or coalesce(v_cfg->>'maxBytes', '0')::bigint > (case when v_type = 'photo' then 10485760 else 26214400 end) then v_err := v_err || private.form_err('file_size_limit_invalid', v_id); end if;
+      v_a := private.form_num(v_cfg->>'maxFiles');
+      if v_a is null or v_a < 1 then v_err := v_err || private.form_err('file_count_invalid', v_id); end if;
+      v_a := private.form_num(v_cfg->>'maxBytes');
+      if v_a is null or v_a < 1 or v_a > (case when v_type = 'photo' then 10485760 else 26214400 end) then v_err := v_err || private.form_err('file_size_limit_invalid', v_id); end if;
     end if;
     if v_type = 'repeat_group' then
       if exists (select 1 from jsonb_array_elements(coalesce(v_cfg->'children', '[]'::jsonb)) c where c->>'type' = 'repeat_group') then v_err := v_err || private.form_err('repeat_group_nested', v_id); end if;
-      if coalesce(v_cfg->>'minRows', '0') !~ '^\d+$' or coalesce(v_cfg->>'maxRows', '') !~ '^\d+$' or coalesce(v_cfg->>'minRows', '0')::int > coalesce(nullif(v_cfg->>'maxRows', ''), '0')::int then v_err := v_err || private.form_err('repeat_rows_invalid', v_id); end if;
+      v_a := private.form_num(coalesce(nullif(v_cfg->>'minRows', ''), '0')); v_b := private.form_num(v_cfg->>'maxRows');
+      if v_a is null or v_b is null or v_a > v_b then v_err := v_err || private.form_err('repeat_rows_invalid', v_id); end if;
     end if;
     if v_q->'scoring' is not null and jsonb_typeof(v_q->'scoring') = 'object' and coalesce(v_q->'scoring'->>'weight', '0') !~ '^\d+(\.\d+)?$' then v_err := v_err || private.form_err('score_weight_invalid', v_id); end if;
     if v_type = 'calculated' then
@@ -159,6 +181,9 @@ begin
 end $f$;
 revoke all on function private.validate_form_definition(jsonb, text[], jsonb) from public, anon;
 grant execute on function private.validate_form_definition(jsonb, text[], jsonb) to authenticated;
+-- The validator is a plain (invoker) function: it reads only its arguments. It calls two helpers, so those need the same grant.
+grant execute on function private.form_err(text, text, text) to authenticated;
+grant execute on function private.form_field_types() to authenticated;
 
 create or replace function private.form_snapshot(p_id uuid) returns jsonb language sql stable security definer set search_path = '' as $f$
   select jsonb_build_object('title', t.title, 'category', t.category, 'languages', to_jsonb(t.languages), 'definition', t.definition,
@@ -167,6 +192,9 @@ create or replace function private.form_snapshot(p_id uuid) returns jsonb langua
 $f$;
 revoke all on function private.form_snapshot(uuid) from public, anon, authenticated;
 
+-- The hash is sha256 over the text form of the snapshot jsonb. Adding or removing a field in private.form_snapshot changes the hash
+-- of every new version. Old versions keep their stored hash and snapshot, so they still verify. Change the snapshot shape only with a
+-- new migration that records the format change (hash format v1 = title, category, languages, definition, change_note, template_revision).
 create or replace function private.form_hash(p_snapshot jsonb) returns text language sql immutable set search_path = '' as $f$
   select encode(sha256(convert_to(p_snapshot::text, 'UTF8')), 'hex')
 $f$;
@@ -260,8 +288,12 @@ create trigger form_version_published after insert on hse.form_versions
   for each row execute function private.form_version_published();
 
 -- API (security invoker: row level security and the guards above apply to the caller)
-create or replace function api.form_validate(p_title jsonb, p_languages text[], p_definition jsonb) returns jsonb
-language sql stable set search_path = '' as $f$ select private.validate_form_definition(p_title, p_languages, p_definition) $f$;
+create or replace function api.form_validate(p_tenant_id uuid, p_title jsonb, p_languages text[], p_definition jsonb) returns jsonb
+language plpgsql stable set search_path = '' as $f$
+begin
+  if not private.can_access_hse(p_tenant_id, 'hse.forms.read') then raise exception 'form_not_permitted' using errcode = '42501'; end if;
+  return private.validate_form_definition(p_title, p_languages, p_definition);
+end $f$;
 
 create or replace function api.form_create_draft(p_tenant_id uuid, p_title jsonb, p_category text, p_definition jsonb, p_languages text[] default array['en','ar']) returns uuid
 language plpgsql set search_path = '' as $f$
@@ -278,7 +310,10 @@ language plpgsql set search_path = '' as $f$
 declare t hse.form_templates; v_rev int;
 begin
   select * into t from hse.form_templates where id = p_id for update;
-  if not found then raise exception 'form_not_found' using errcode = '22023'; end if;
+  if not found then
+    if exists (select 1 from hse.form_templates where id = p_id) then raise exception 'form_not_permitted' using errcode = '42501'; end if;
+    raise exception 'form_not_found' using errcode = '22023';
+  end if;
   if t.revision <> p_expected_revision then raise exception 'form_revision_conflict' using errcode = '40001'; end if;
   if t.status = 'in_approval' then raise exception 'form_locked_in_approval' using errcode = '23514'; end if;
   update hse.form_templates set title = p_title, category = p_category, definition = p_definition, languages = p_languages, status = 'draft'
@@ -291,16 +326,25 @@ language plpgsql set search_path = '' as $f$
 declare t hse.form_templates;
 begin
   select * into t from hse.form_templates where id = p_id for update;
-  if not found then raise exception 'form_not_found' using errcode = '22023'; end if;
+  if not found then
+    if exists (select 1 from hse.form_templates where id = p_id) then raise exception 'form_not_permitted' using errcode = '42501'; end if;
+    raise exception 'form_not_found' using errcode = '22023';
+  end if;
   if t.revision <> p_expected_revision then raise exception 'form_revision_conflict' using errcode = '40001'; end if;
   update hse.form_templates set status = 'in_approval', change_note = p_change_note where id = p_id;
 end $f$;
 
-create or replace function api.form_return_to_draft(p_id uuid, p_reason text) returns void
+create or replace function api.form_return_to_draft(p_id uuid, p_expected_revision integer, p_reason text) returns void
 language plpgsql set search_path = '' as $f$
+declare t hse.form_templates;
 begin
+  select * into t from hse.form_templates where id = p_id for update;
+  if not found then
+    if exists (select 1 from hse.form_templates where id = p_id) then raise exception 'form_not_permitted' using errcode = '42501'; end if;
+    raise exception 'form_not_found' using errcode = '22023';
+  end if;
+  if t.revision <> p_expected_revision then raise exception 'form_revision_conflict' using errcode = '40001'; end if;
   update hse.form_templates set status = 'draft', return_reason = p_reason where id = p_id;
-  if not found then raise exception 'form_not_found' using errcode = '22023'; end if;
 end $f$;
 
 create or replace function api.form_approve_publish(p_id uuid, p_expected_revision integer) returns integer
@@ -308,19 +352,28 @@ language plpgsql set search_path = '' as $f$
 declare t hse.form_templates; v_version int;
 begin
   select * into t from hse.form_templates where id = p_id for update;
-  if not found then raise exception 'form_not_found' using errcode = '22023'; end if;
+  if not found then
+    if exists (select 1 from hse.form_templates where id = p_id) then raise exception 'form_not_permitted' using errcode = '42501'; end if;
+    raise exception 'form_not_found' using errcode = '22023';
+  end if;
   if t.revision <> p_expected_revision then raise exception 'form_revision_conflict' using errcode = '40001'; end if;
   insert into hse.form_versions(tenant_id, template_id, version, snapshot, published_by)
   values (t.tenant_id, t.id, 1, '{}'::jsonb, auth.uid()) returning version into v_version;
   return v_version;
 end $f$;
 
-create or replace function api.form_set_status(p_id uuid, p_status text) returns void
+create or replace function api.form_set_status(p_id uuid, p_expected_revision integer, p_status text) returns void
 language plpgsql set search_path = '' as $f$
+declare t hse.form_templates;
 begin
   if p_status not in ('retired','archived','draft') then raise exception 'form_status_transition_not_allowed' using errcode = '23514'; end if;
+  select * into t from hse.form_templates where id = p_id for update;
+  if not found then
+    if exists (select 1 from hse.form_templates where id = p_id) then raise exception 'form_not_permitted' using errcode = '42501'; end if;
+    raise exception 'form_not_found' using errcode = '22023';
+  end if;
+  if t.revision <> p_expected_revision then raise exception 'form_revision_conflict' using errcode = '40001'; end if;
   update hse.form_templates set status = p_status where id = p_id;
-  if not found then raise exception 'form_not_found' using errcode = '22023'; end if;
 end $f$;
 
 create or replace function api.form_clone(p_id uuid, p_title jsonb default null) returns uuid
@@ -360,11 +413,38 @@ begin
     'added', v_added, 'removed', v_removed, 'changed', v_changed);
 end $f$;
 
+-- Read views for the form builder (security invoker: row level security applies to the caller).
+-- New columns are appended to api.v_forms; existing columns keep their names and order.
+create or replace view api.v_forms with (security_invoker=true) as
+ select f.id, f.tenant_id as "workspaceId", f.title, f.category, f.status, f.revision, f.definition,
+        f.owner_membership_id as "ownerMembershipId", f.updated_at as "updatedAt",
+        f.languages, f.change_note as "changeNote", f.return_reason as "returnReason", f.submitted_by as "submittedBy",
+        f.submitted_at as "submittedAt", f.last_edited_by as "lastEditedBy", f.review_due_date as "reviewDueDate", f.is_library as "isLibrary"
+   from hse.form_templates f;
+grant select on api.v_forms to authenticated;
+
+-- Version history list. No snapshot body here: use api.form_version_get for one snapshot.
+create or replace view api.v_form_versions with (security_invoker=true) as
+ select v.id, v.tenant_id as "workspaceId", v.template_id as "templateId", v.version, v.snapshot_hash as "snapshotHash",
+        v.change_note as "changeNote", v.submitted_by as "submittedBy", v.approved_by as "approvedBy", v.approved_at as "approvedAt",
+        v.published_by as "publishedBy", v.published_at as "publishedAt"
+   from hse.form_versions v;
+grant select on api.v_form_versions to authenticated;
+
+create or replace function api.form_version_get(p_template_id uuid, p_version integer) returns jsonb
+language plpgsql stable set search_path = '' as $f$
+declare v_snap jsonb;
+begin
+  select v.snapshot into v_snap from hse.form_versions v where v.template_id = p_template_id and v.version = p_version;
+  if v_snap is null then raise exception 'form_version_not_found' using errcode = '22023'; end if;
+  return v_snap;
+end $f$;
+
 do $g$
 declare r record;
 begin
   for r in select p.oid::regprocedure as sig from pg_proc p where p.pronamespace = 'api'::regnamespace
-     and p.proname in ('form_validate','form_create_draft','form_save_draft','form_submit_for_approval','form_return_to_draft','form_approve_publish','form_set_status','form_clone','form_compare_versions') loop
+     and p.proname in ('form_validate','form_create_draft','form_save_draft','form_submit_for_approval','form_return_to_draft','form_approve_publish','form_set_status','form_clone','form_compare_versions','form_version_get') loop
     execute format('revoke all on function %s from public, anon, service_role', r.sig);
     execute format('grant execute on function %s to authenticated', r.sig);
   end loop;
