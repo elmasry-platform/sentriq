@@ -49,7 +49,7 @@ begin
   select * into t from hse.form_templates where id = new.template_id and tenant_id = new.tenant_id for update;
   if not found then raise exception 'form_not_found' using errcode = '22023'; end if;
   if t.status <> 'in_approval' then raise exception 'form_not_in_approval' using errcode = '22023'; end if;
-  if v_uid = t.submitted_by or v_uid = t.last_edited_by then raise exception 'form_approver_must_differ_from_author' using errcode = '42501'; end if;
+  if v_uid = t.submitted_by or v_uid = t.last_edited_by or v_uid = t.created_by then raise exception 'form_approver_must_differ_from_author' using errcode = '42501'; end if;
   v_errs := private.validate_form_definition(t.title, t.languages, t.definition);
   if jsonb_array_length(v_errs) > 0 then raise exception 'form_validation_failed' using errcode = '22023', detail = v_errs::text; end if;
   new.version := coalesce((select max(v.version) from hse.form_versions v where v.template_id = t.id), 0) + 1;

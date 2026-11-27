@@ -1,15 +1,16 @@
 -- 059 (HSE M02): permission keys for form approval and retirement.
 -- Catalog only. No iam.roles or role_permissions change: company superadmins get the new keys by the
 -- default full access rule, everyone else stays denied until a profile or decision grants them.
--- Publishing a form now needs hse.forms.approve (write) on top of hse.forms.manage. Retiring a published form
--- needs hse.forms.retire (write). Both are checked inside the guards, so direct table writes are covered too.
+-- Publishing a form now needs hse.forms.approve (write) on top of hse.forms.manage. Moving a published form to
+-- retired or archived needs hse.forms.retire (write); draft to archived stays on manage. The approver may not be the
+-- creator, the last editor or the submitter. Both are checked inside the guards, so direct table writes are covered too.
 -- No feature rows and no feature link: the new keys are not tied to a feature, so no tenant loses access.
 -- Roll back with supabase/rollbacks/202611250059_hse_form_permission_keys.rollback.sql.
 
 insert into iam.permission_catalog(permission_key,module_key,label,description,enabled,feature_key,supported_actions,supported_scope_kinds,requires_reason,is_sensitive)
 values
- ('hse.forms.approve','hse','Approve forms','Approve and publish a form template that was submitted for approval. The approver must not be the author.',true,null,'{read,write}','{tenant,site,org_unit,assigned_task}',false,true),
- ('hse.forms.retire','hse','Retire forms','Retire a published form template so it can no longer start new records.',true,null,'{read,write}','{tenant,site,org_unit,assigned_task}',false,true)
+ ('hse.forms.approve','hse','Approve forms','Approve and publish a form template that was submitted for approval. The approver must not be the creator, the last editor or the submitter.',true,null,'{read,write}','{tenant,site,org_unit,assigned_task}',false,true),
+ ('hse.forms.retire','hse','Retire forms','Retire or archive a published form template so it can no longer start new records.',true,null,'{read,write}','{tenant,site,org_unit,assigned_task}',false,true)
 on conflict(permission_key) do nothing;
 
 create or replace function private.guard_form_template_write() returns trigger language plpgsql security definer set search_path = '' as $f$
@@ -29,7 +30,7 @@ begin
     when 'archived' then new.status in ('archived','draft')
     else false end;
   if not v_ok then raise exception 'form_status_transition_not_allowed' using errcode = '23514', detail = old.status || ' to ' || new.status; end if;
-  if new.status = 'retired' and old.status <> 'retired' and not private.can_access_hse(new.tenant_id, 'hse.forms.retire', null, true) then
+  if old.status = 'published' and new.status in ('retired','archived') and not private.can_access_hse(new.tenant_id, 'hse.forms.retire', null, true) then
     raise exception 'form_retire_not_permitted' using errcode = '42501'; end if;
   v_content := row(new.title, new.category, new.definition, new.languages) is distinct from row(old.title, old.category, old.definition, old.languages);
   if v_content and old.status = 'in_approval' then raise exception 'form_locked_in_approval' using errcode = '23514'; end if;
@@ -64,7 +65,7 @@ begin
   if not found then raise exception 'form_not_found' using errcode = '22023'; end if;
   if t.status <> 'in_approval' then raise exception 'form_not_in_approval' using errcode = '22023'; end if;
   if not private.can_access_hse(t.tenant_id, 'hse.forms.approve', null, true) then raise exception 'form_approve_not_permitted' using errcode = '42501'; end if;
-  if v_uid = t.submitted_by or v_uid = t.last_edited_by then raise exception 'form_approver_must_differ_from_author' using errcode = '42501'; end if;
+  if v_uid = t.submitted_by or v_uid = t.last_edited_by or v_uid = t.created_by then raise exception 'form_approver_must_differ_from_author' using errcode = '42501'; end if;
   v_errs := private.validate_form_definition(t.title, t.languages, t.definition);
   if jsonb_array_length(v_errs) > 0 then raise exception 'form_validation_failed' using errcode = '22023', detail = v_errs::text; end if;
   new.version := coalesce((select max(v.version) from hse.form_versions v where v.template_id = t.id), 0) + 1;

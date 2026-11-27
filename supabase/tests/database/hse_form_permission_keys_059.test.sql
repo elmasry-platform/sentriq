@@ -2,9 +2,9 @@
 -- The test embeds the rollback (to rebuild the old state, because CI applies every migration first) and the migration
 -- (checked against the files by scripts/check_059_embed.sh). Needs 058 applied. Rolled back at the end.
 begin;
-select extensions.plan(23);
+select extensions.plan(29);
 grant usage on schema extensions to anon, authenticated, service_role;
-insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at) select ('e0000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','m-'||i||'@example.test',now(),now(),now() from generate_series(1,7) i;
+insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at) select ('e0000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','m-'||i||'@example.test',now(),now(),now() from generate_series(1,8) i;
 select private.bootstrap_platform_owner('e0000000-0000-0000-0000-000000000001');
 insert into core.tenants(id,name,created_by) values ('e1000000-0000-0000-0000-00000000000a','M58','e0000000-0000-0000-0000-000000000001'),('e1000000-0000-0000-0000-00000000000b','M58 other','e0000000-0000-0000-0000-000000000001');
 insert into iam.memberships(id,tenant_id,user_id,member_role,email,status) values
@@ -12,6 +12,7 @@ insert into iam.memberships(id,tenant_id,user_id,member_role,email,status) value
 ('e2000000-0000-0000-0000-000000000003','e1000000-0000-0000-0000-00000000000a','e0000000-0000-0000-0000-000000000003','company_superadmin','m-3@example.test','active'),
 ('e2000000-0000-0000-0000-000000000004','e1000000-0000-0000-0000-00000000000a','e0000000-0000-0000-0000-000000000004','employee','m-4@example.test','active'),
 ('e2000000-0000-0000-0000-000000000005','e1000000-0000-0000-0000-00000000000a','e0000000-0000-0000-0000-000000000005','company_superadmin','m-5@example.test','active'),
+('e2000000-0000-0000-0000-000000000008','e1000000-0000-0000-0000-00000000000a','e0000000-0000-0000-0000-000000000008','company_superadmin','m-8@example.test','active'),
 ('e2000000-0000-0000-0000-000000000006','e1000000-0000-0000-0000-00000000000b','e0000000-0000-0000-0000-000000000006','company_superadmin','m-6@example.test','active');
 insert into core.entitlement_grants(tenant_id,module_key,starts_at,expires_at,granted_by,reason,billing_treatment) values ('e1000000-0000-0000-0000-00000000000a','hse',now()-interval '1 day',now()+interval '30 days','e0000000-0000-0000-0000-000000000001','M58 fixture','complimentary'),('e1000000-0000-0000-0000-00000000000b','hse',now()-interval '1 day',now()+interval '30 days','e0000000-0000-0000-0000-000000000001','M58 fixture','complimentary');
 -- u2/u3/u5 company superadmins of A, u4 employee of A, u6 superadmin of B
@@ -71,7 +72,7 @@ begin
   select * into t from hse.form_templates where id = new.template_id and tenant_id = new.tenant_id for update;
   if not found then raise exception 'form_not_found' using errcode = '22023'; end if;
   if t.status <> 'in_approval' then raise exception 'form_not_in_approval' using errcode = '22023'; end if;
-  if v_uid = t.submitted_by or v_uid = t.last_edited_by then raise exception 'form_approver_must_differ_from_author' using errcode = '42501'; end if;
+  if v_uid = t.submitted_by or v_uid = t.last_edited_by or v_uid = t.created_by then raise exception 'form_approver_must_differ_from_author' using errcode = '42501'; end if;
   v_errs := private.validate_form_definition(t.title, t.languages, t.definition);
   if jsonb_array_length(v_errs) > 0 then raise exception 'form_validation_failed' using errcode = '22023', detail = v_errs::text; end if;
   new.version := coalesce((select max(v.version) from hse.form_versions v where v.template_id = t.id), 0) + 1;
@@ -91,15 +92,16 @@ reset role;
 -- 059 (HSE M02): permission keys for form approval and retirement.
 -- Catalog only. No iam.roles or role_permissions change: company superadmins get the new keys by the
 -- default full access rule, everyone else stays denied until a profile or decision grants them.
--- Publishing a form now needs hse.forms.approve (write) on top of hse.forms.manage. Retiring a published form
--- needs hse.forms.retire (write). Both are checked inside the guards, so direct table writes are covered too.
+-- Publishing a form now needs hse.forms.approve (write) on top of hse.forms.manage. Moving a published form to
+-- retired or archived needs hse.forms.retire (write); draft to archived stays on manage. The approver may not be the
+-- creator, the last editor or the submitter. Both are checked inside the guards, so direct table writes are covered too.
 -- No feature rows and no feature link: the new keys are not tied to a feature, so no tenant loses access.
 -- Roll back with supabase/rollbacks/202611250059_hse_form_permission_keys.rollback.sql.
 
 insert into iam.permission_catalog(permission_key,module_key,label,description,enabled,feature_key,supported_actions,supported_scope_kinds,requires_reason,is_sensitive)
 values
- ('hse.forms.approve','hse','Approve forms','Approve and publish a form template that was submitted for approval. The approver must not be the author.',true,null,'{read,write}','{tenant,site,org_unit,assigned_task}',false,true),
- ('hse.forms.retire','hse','Retire forms','Retire a published form template so it can no longer start new records.',true,null,'{read,write}','{tenant,site,org_unit,assigned_task}',false,true)
+ ('hse.forms.approve','hse','Approve forms','Approve and publish a form template that was submitted for approval. The approver must not be the creator, the last editor or the submitter.',true,null,'{read,write}','{tenant,site,org_unit,assigned_task}',false,true),
+ ('hse.forms.retire','hse','Retire forms','Retire or archive a published form template so it can no longer start new records.',true,null,'{read,write}','{tenant,site,org_unit,assigned_task}',false,true)
 on conflict(permission_key) do nothing;
 
 create or replace function private.guard_form_template_write() returns trigger language plpgsql security definer set search_path = '' as $f$
@@ -119,7 +121,7 @@ begin
     when 'archived' then new.status in ('archived','draft')
     else false end;
   if not v_ok then raise exception 'form_status_transition_not_allowed' using errcode = '23514', detail = old.status || ' to ' || new.status; end if;
-  if new.status = 'retired' and old.status <> 'retired' and not private.can_access_hse(new.tenant_id, 'hse.forms.retire', null, true) then
+  if old.status = 'published' and new.status in ('retired','archived') and not private.can_access_hse(new.tenant_id, 'hse.forms.retire', null, true) then
     raise exception 'form_retire_not_permitted' using errcode = '42501'; end if;
   v_content := row(new.title, new.category, new.definition, new.languages) is distinct from row(old.title, old.category, old.definition, old.languages);
   if v_content and old.status = 'in_approval' then raise exception 'form_locked_in_approval' using errcode = '23514'; end if;
@@ -154,7 +156,7 @@ begin
   if not found then raise exception 'form_not_found' using errcode = '22023'; end if;
   if t.status <> 'in_approval' then raise exception 'form_not_in_approval' using errcode = '22023'; end if;
   if not private.can_access_hse(t.tenant_id, 'hse.forms.approve', null, true) then raise exception 'form_approve_not_permitted' using errcode = '42501'; end if;
-  if v_uid = t.submitted_by or v_uid = t.last_edited_by then raise exception 'form_approver_must_differ_from_author' using errcode = '42501'; end if;
+  if v_uid = t.submitted_by or v_uid = t.last_edited_by or v_uid = t.created_by then raise exception 'form_approver_must_differ_from_author' using errcode = '42501'; end if;
   v_errs := private.validate_form_definition(t.title, t.languages, t.definition);
   if jsonb_array_length(v_errs) > 0 then raise exception 'form_validation_failed' using errcode = '22023', detail = v_errs::text; end if;
   new.version := coalesce((select max(v.version) from hse.form_versions v where v.template_id = t.id), 0) + 1;
@@ -198,6 +200,23 @@ reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-0
 select extensions.is((api.form_approve_publish(current_setting('t59.y')::uuid,1)), 1, 'A05 positive control: the employee approves once forms.approve is granted');
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000004',true); select set_config('request.jwt.claims','',true); set local role authenticated;
 select extensions.throws_ok($$insert into hse.form_versions(tenant_id,template_id,version,snapshot,published_by) values ('e1000000-0000-0000-0000-00000000000a',current_setting('t59.y')::uuid,2,'{}','e0000000-0000-0000-0000-000000000004')$$, '22023', 'form_not_in_approval', 'A06 direct version insert on a published template is still refused');
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000002',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select set_config('t59.w', api.form_create_draft('e1000000-0000-0000-0000-00000000000a','{"en":"W","ar":"و"}','Safety',extensions.d59())::text, true);
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000003',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select api.form_save_draft(current_setting('t59.w')::uuid,1,'{"en":"W2","ar":"و٢"}','Safety',extensions.d59());
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000003',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select api.form_submit_for_approval(current_setting('t59.w')::uuid,2,'w v1');
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000002',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.throws_ok($$select api.form_approve_publish(current_setting('t59.w')::uuid,2)$$, '42501', 'form_approver_must_differ_from_author', 'A07 the creator (not the last editor, not the submitter) cannot approve');
+reset role; select set_config('request.jwt.claim.sub','',true); select set_config('request.jwt.claims','',true);
+select set_config('sentriq.migration_runner','on',true); insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,granted_by,reason) values ('e1000000-0000-0000-0000-00000000000a','e2000000-0000-0000-0000-000000000004','hse.forms.manage','deny','tenant','e0000000-0000-0000-0000-000000000001','m59 deny manage'); select set_config('sentriq.migration_runner','off',true);
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000004',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.throws_ok($$select api.form_approve_publish(current_setting('t59.w')::uuid,2)$$, '42501', null, 'A08 a user holding forms.approve but not forms.manage cannot approve');
+select extensions.is(((select status from hse.form_templates where id=current_setting('t59.w')::uuid)), 'in_approval', 'A09 the refused approval left the template in approval');
+reset role; select set_config('request.jwt.claim.sub','',true); select set_config('request.jwt.claims','',true);
+select set_config('sentriq.migration_runner','on',true); delete from iam.member_permission_decisions where membership_id='e2000000-0000-0000-0000-000000000004' and permission_key='hse.forms.manage' and decision='deny'; select set_config('sentriq.migration_runner','off',true);
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000004',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.is((api.form_approve_publish(current_setting('t59.w')::uuid,2)), 1, 'A10 positive control: the same user approves once the manage deny is removed');
 reset role; select set_config('request.jwt.claim.sub','',true); select set_config('request.jwt.claims','',true);
 select set_config('sentriq.migration_runner','on',true); insert into iam.member_permission_decisions(tenant_id,membership_id,permission_key,decision,scope_kind,granted_by,reason) values ('e1000000-0000-0000-0000-00000000000a','e2000000-0000-0000-0000-000000000005','hse.forms.retire','deny','tenant','e0000000-0000-0000-0000-000000000001','m59 deny retire'); select set_config('sentriq.migration_runner','off',true);
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000005',true); select set_config('request.jwt.claims','',true); set local role authenticated;
@@ -207,7 +226,12 @@ select extensions.throws_ok($$update hse.form_templates set status='retired' whe
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000004',true); select set_config('request.jwt.claims','',true); set local role authenticated;
 select extensions.throws_ok($$select api.form_set_status(current_setting('t59.y')::uuid,1,'retired')$$, '42501', 'form_retire_not_permitted', 'B03 an employee with manage but without retire cannot retire');
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000004',true); select set_config('request.jwt.claims','',true); set local role authenticated;
-select extensions.lives_ok($$select api.form_set_status(current_setting('t59.y')::uuid,1,'archived')$$, 'B04 archiving needs only forms.manage (retire key is specific to retire)');
+select extensions.throws_ok($$select api.form_set_status(current_setting('t59.y')::uuid,1,'archived')$$, '42501', 'form_retire_not_permitted', 'B04 manage without retire cannot archive a published form');
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000002',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.lives_ok($$select api.form_set_status(current_setting('t59.y')::uuid,1,'archived')$$, 'B04a with retire (superadmin, no deny) the published form is archived');
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000004',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select set_config('t59.z', api.form_create_draft('e1000000-0000-0000-0000-00000000000a','{"en":"Z","ar":"ز"}','Safety',extensions.d59())::text, true);
+select extensions.lives_ok($$select api.form_set_status(current_setting('t59.z')::uuid,1,'archived')$$, 'B04b draft to archived stays on forms.manage (employee without retire)');
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000002',true); select set_config('request.jwt.claims','',true); set local role authenticated;
 select extensions.lives_ok($$select api.form_set_status(current_setting('t59.x')::uuid,1,'retired')$$, 'B05 positive control: a superadmin without the deny retires');
 select extensions.is(((select status from hse.form_templates where id=current_setting('t59.x')::uuid)), 'retired', 'B06 template X is retired');
@@ -272,7 +296,7 @@ begin
   select * into t from hse.form_templates where id = new.template_id and tenant_id = new.tenant_id for update;
   if not found then raise exception 'form_not_found' using errcode = '22023'; end if;
   if t.status <> 'in_approval' then raise exception 'form_not_in_approval' using errcode = '22023'; end if;
-  if v_uid = t.submitted_by or v_uid = t.last_edited_by then raise exception 'form_approver_must_differ_from_author' using errcode = '42501'; end if;
+  if v_uid = t.submitted_by or v_uid = t.last_edited_by or v_uid = t.created_by then raise exception 'form_approver_must_differ_from_author' using errcode = '42501'; end if;
   v_errs := private.validate_form_definition(t.title, t.languages, t.definition);
   if jsonb_array_length(v_errs) > 0 then raise exception 'form_validation_failed' using errcode = '22023', detail = v_errs::text; end if;
   new.version := coalesce((select max(v.version) from hse.form_versions v where v.template_id = t.id), 0) + 1;
