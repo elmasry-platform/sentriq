@@ -1,6 +1,6 @@
 # Production release runbook: migrations 045 to 055
 
-Status: PREPARED, NOT EXECUTED on production. Nothing here has been run on production. On TEST, 051 to 054 were applied on 2026-11-26 (Mohamed's approval), and PR #14 and PR #15 are merged; the production release still needs Mohamed's explicit go-ahead for each step.
+Status: PREPARED, NOT EXECUTED on production. Nothing here has been run on production. On TEST, 051 to 054 were applied on 2026-11-26 and 055 on 2026-11-27 (Mohamed's approval); PRs #14, #15 and #18 are merged. The production release still needs Mohamed's explicit go-ahead for each step.
 
 What I could not check: the production database. I have no access to it, so I do not know which migrations production already has. Step 0 finds out. If production is behind 044, 040 to 044 must go first (see "Earlier migrations").
 
@@ -15,7 +15,7 @@ What I could not check: the production database. I have no access to it, so I do
 
 ## Step 0: preflight (read only, any time)
 
-1. `select max(version), count(*) from supabase_migrations.schema_migrations;` Expect 202611250044 if production is two steps behind TEST, or lower. TEST is at 202611250054 (71 rows).
+1. `select max(version), count(*) from supabase_migrations.schema_migrations;` Expect 202611250044 if production is two steps behind TEST, or lower. TEST is at 202611250055 (72 rows).
 2. Run `supabase/e2e/verify_release_state.sql` against production (SELECT only). Before release the 051-053 rows should show STATE_050 (or UNKNOWN/MISSING if production is behind 050). After the release every row must show STATE_053 or OK. The hashes were measured on PostgreSQL 16.2 and are equal on TEST (17.6); if production runs another major version, an UNKNOWN hash means compare the function text, not an automatic failure.
 3. Check for stuck states that change what 050 and 052 do: `select count(*) from iam.memberships where status='suspended';` and `select count(*) from iam.member_permission_decisions where status='suspended' and not suspended_by_tenant;` Write both numbers down. Members already suspended before 050 keep their decisions suspended after reactivation (052 behavior, see step 5).
 4. Take a restore point (Supabase backup or point-in-time marker). Record its id in the release log.
@@ -61,7 +61,7 @@ Preconditions: PR #15 merged (CI green after #14: Files=31, Tests=1243), applied
 ## Step 10: migration 055, company Admin reads site assignments of Employee-level members (after 054; PR #18)
 
 A company Admin can read `iam.site_access` rows of Employee-level members of the same company (and their own rows), never Superadmin rows, never other Admin rows, never another company. Level comes from `iam.memberships.member_role` only, so temporary permissions, delegations and grants cannot widen it. Read only: `site_access_insert` and `site_access_update` are not touched. Effect: `api.v_memberships."siteIds"` now returns the employees' site ids for an Admin. Adds `private.admin_can_read_employee_member(uuid,uuid)` (execute for authenticated only, not anon, not service_role), replaces policy `site_access_read`. Independent of 054. No data change. Rollback: `supabase/rollbacks/202611250055_admin_reads_employee_site_access.rollback.sql`.
-Preconditions: PR #18 merged (CI Files=32, Tests=1267), applied to TEST first with `verify_release_state.sql` showing STATE_055 on the 055 rows, and the 055 rollback replayed. Visible `granted_by` user ids on site rows are readable by the Admin for those employee rows.
+Preconditions: PR #18 merged (CI Files=32, Tests=1267), applied to TEST first (done 2026-11-27) with `verify_release_state.sql` showing STATE_055 on the 055 rows, and the 055 rollback replayed on a scratch clone (done, 055 rows back to STATE_054). Visible `granted_by` user ids on site rows are readable by the Admin for those employee rows.
 
 ## Gate before production: TEST apply and rollback replay of 051 to 054 (done on TEST, 2026-11-26)
 
