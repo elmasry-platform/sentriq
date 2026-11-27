@@ -2,7 +2,7 @@
 -- The test embeds the rollback (to rebuild the old state, because CI applies every migration first) and the migration
 -- (checked against the files by scripts/check_057_embed.sh). Rolled back at the end.
 begin;
-select extensions.plan(66);
+select extensions.plan(70);
 grant usage on schema extensions to anon, authenticated, service_role;
 grant execute on all functions in schema extensions to anon, authenticated, service_role;
 insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at)
@@ -89,6 +89,7 @@ drop function if exists private.set_platform_aal2_required(boolean, text);
 drop function if exists private.platform_aal_ok();
 drop table if exists iam.platform_security_settings;
 drop function if exists private.platform_security_settings_guard();
+drop function if exists private.platform_security_settings_audit();
 -- END EMBEDDED 057 ROLLBACK
 select extensions.is(to_regclass('iam.platform_security_settings') is null and to_regproc('private.platform_aal_ok') is null, true, 'T01 before state: no switch table, no aal function');
 reset role; select set_config('request.jwt.claim.sub','f0000000-0000-0000-0000-000000000001',true); select set_config('request.jwt.claims',$c${"aal":"aal1"}$c$,true); set local role authenticated;
@@ -129,11 +130,25 @@ begin
 end $f$;
 revoke all on function private.platform_security_settings_guard() from public, anon, authenticated;
 drop trigger if exists platform_security_settings_guard on iam.platform_security_settings;
-drop trigger if exists audit_row_change on iam.platform_security_settings;
+drop trigger if exists platform_security_settings_audit on iam.platform_security_settings;
 create trigger platform_security_settings_guard before update or delete on iam.platform_security_settings
   for each row execute function private.platform_security_settings_guard();
-create trigger audit_row_change after insert or update or delete on iam.platform_security_settings
-  for each row execute function private.audit_row_change();
+-- Own audit trigger: the audit row carries the new value, the direction (on/off) and the reason of every change.
+create or replace function private.platform_security_settings_audit() returns trigger language plpgsql security definer set search_path = '' as $f$
+declare v_row iam.platform_security_settings;
+begin
+  v_row := case when tg_op = 'DELETE' then old else new end;
+  insert into audit.events(tenant_id, actor_user_id, scope_kind, request_id, action_key, record_type, record_id, summary)
+  values (null, auth.uid(), 'platform', nullif(current_setting('request.headers', true)::jsonb ->> 'x-request-id', ''),
+    tg_table_schema || '.' || tg_table_name || '.' || lower(tg_op), tg_table_schema || '.' || tg_table_name, null,
+    jsonb_build_object('operation', tg_op, 'setting_key', v_row.setting_key, 'enabled', v_row.enabled,
+      'direction', case when v_row.enabled then 'on' else 'off' end, 'reason', v_row.reason,
+      'changed_fields', case when tg_op = 'UPDATE' then jsonb_build_object('enabled', jsonb_build_object('before', old.enabled, 'after', new.enabled)) else '{}'::jsonb end));
+  if tg_op = 'DELETE' then return old; end if; return new;
+end $f$;
+revoke all on function private.platform_security_settings_audit() from public, anon, authenticated;
+create trigger platform_security_settings_audit after insert or update or delete on iam.platform_security_settings
+  for each row execute function private.platform_security_settings_audit();
 
 create or replace function private.platform_aal_ok() returns boolean language plpgsql stable security definer set search_path = '' as $f$
 begin
@@ -257,7 +272,7 @@ reset role;
 select extensions.throws_ok($$delete from iam.platform_security_settings$$,'23514','platform_security_setting_not_deletable','T20 switch row cannot be deleted');
 select extensions.throws_ok($$update iam.platform_security_settings set enabled=true$$,'23514','platform_security_setting_reason_required','T21 changing the switch needs a reason');
 select extensions.throws_ok($$insert into iam.platform_security_settings(setting_key) values ('other')$$,'23514',null,'T22 only the require_aal2 key exists');
-select extensions.lives_ok($$select private.set_platform_aal2_required(true,'a56 test')$$,'T23 DB admin turns the switch ON');
+select extensions.lives_ok($$select private.set_platform_aal2_required(true,'a57 test')$$,'T23 DB admin turns the switch ON');
 select extensions.is((select count(*)::int from audit.events where record_type='iam.platform_security_settings' and action_key='iam.platform_security_settings.update'), 1, 'T24 the change is in the audit trail');
 select extensions.is((select summary->'changed_fields'->'enabled'->>'after' from audit.events where record_type='iam.platform_security_settings' and action_key='iam.platform_security_settings.update'), 'true', 'T25 audit row shows enabled=true');
 reset role; select set_config('request.jwt.claim.sub','f0000000-0000-0000-0000-000000000001',true); select set_config('request.jwt.claims',$c${"aal":"aal1"}$c$,true); set local role authenticated;
@@ -329,7 +344,11 @@ select extensions.is(private.operator_decision_actor(), null::uuid, 'X1 ON owner
 reset role; select set_config('request.jwt.claim.sub','f0000000-0000-0000-0000-000000000001',true); select set_config('request.jwt.claims','{"aal":"aal2"}',true); select set_config('sentriq.operator_decision_actor','f0000000-0000-0000-0000-000000000001',true);
 select extensions.is(private.operator_decision_actor(), 'f0000000-0000-0000-0000-000000000001'::uuid, 'X2 ON owner aal2: operator_decision_actor returns the actor');
 reset role;
-select extensions.lives_ok($$select private.set_platform_aal2_required(false,'a56 back off')$$,'T58 DB admin turns the switch OFF');
+select extensions.lives_ok($$select private.set_platform_aal2_required(false,'a57 back off')$$,'T58 DB admin turns the switch OFF');
+select extensions.is((select count(*)::int from audit.events where action_key='iam.platform_security_settings.update'), 2, 'X4 two changes give two audit rows');
+select extensions.is((select array_agg(summary->>'direction' order by id) from audit.events where action_key='iam.platform_security_settings.update'), array['on','off'], 'X5 audit rows show the direction, on then off');
+select extensions.is((select array_agg(summary->>'reason' order by id) from audit.events where action_key='iam.platform_security_settings.update'), array['a57 test','a57 back off'], 'X6 audit rows show the reason of each change');
+select extensions.is((select array_agg((summary->>'enabled')::boolean order by id) from audit.events where action_key='iam.platform_security_settings.update'), array[true,false], 'X7 audit rows show the new value');
 reset role; select set_config('request.jwt.claim.sub','f0000000-0000-0000-0000-000000000001',true); select set_config('request.jwt.claims',$c${"aal":"aal1"}$c$,true); set local role authenticated;
 select extensions.is(private.is_platform_operator(), true, 'T59 OFF again: owner aal1 is an operator again');
 reset role; select set_config('request.jwt.claim.sub','f0000000-0000-0000-0000-000000000001',true); select set_config('request.jwt.claims',$c${"aal":"aal1"}$c$,true); set local role authenticated;
@@ -409,6 +428,7 @@ drop function if exists private.set_platform_aal2_required(boolean, text);
 drop function if exists private.platform_aal_ok();
 drop table if exists iam.platform_security_settings;
 drop function if exists private.platform_security_settings_guard();
+drop function if exists private.platform_security_settings_audit();
 -- END EMBEDDED 057 ROLLBACK
 select extensions.is(to_regclass('iam.platform_security_settings') is null and to_regproc('private.platform_aal_ok') is null and to_regproc('private.set_platform_aal2_required') is null, true, 'T61 rollback removes the switch objects');
 select extensions.is((select bool_and(prosrc not ilike '%platform_aal_ok%') from pg_proc where oid in ('private.is_platform_operator()'::regprocedure,'private.is_platform_owner()'::regprocedure,'private.platform_permission_allowed(text,uuid)'::regprocedure,'private.operator_decision_actor()'::regprocedure,'api.my_platform_permissions()'::regprocedure)), true, 'T62 rollback restores all 5 function bodies without the gate');

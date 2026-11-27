@@ -32,11 +32,25 @@ begin
 end $f$;
 revoke all on function private.platform_security_settings_guard() from public, anon, authenticated;
 drop trigger if exists platform_security_settings_guard on iam.platform_security_settings;
-drop trigger if exists audit_row_change on iam.platform_security_settings;
+drop trigger if exists platform_security_settings_audit on iam.platform_security_settings;
 create trigger platform_security_settings_guard before update or delete on iam.platform_security_settings
   for each row execute function private.platform_security_settings_guard();
-create trigger audit_row_change after insert or update or delete on iam.platform_security_settings
-  for each row execute function private.audit_row_change();
+-- Own audit trigger: the audit row carries the new value, the direction (on/off) and the reason of every change.
+create or replace function private.platform_security_settings_audit() returns trigger language plpgsql security definer set search_path = '' as $f$
+declare v_row iam.platform_security_settings;
+begin
+  v_row := case when tg_op = 'DELETE' then old else new end;
+  insert into audit.events(tenant_id, actor_user_id, scope_kind, request_id, action_key, record_type, record_id, summary)
+  values (null, auth.uid(), 'platform', nullif(current_setting('request.headers', true)::jsonb ->> 'x-request-id', ''),
+    tg_table_schema || '.' || tg_table_name || '.' || lower(tg_op), tg_table_schema || '.' || tg_table_name, null,
+    jsonb_build_object('operation', tg_op, 'setting_key', v_row.setting_key, 'enabled', v_row.enabled,
+      'direction', case when v_row.enabled then 'on' else 'off' end, 'reason', v_row.reason,
+      'changed_fields', case when tg_op = 'UPDATE' then jsonb_build_object('enabled', jsonb_build_object('before', old.enabled, 'after', new.enabled)) else '{}'::jsonb end));
+  if tg_op = 'DELETE' then return old; end if; return new;
+end $f$;
+revoke all on function private.platform_security_settings_audit() from public, anon, authenticated;
+create trigger platform_security_settings_audit after insert or update or delete on iam.platform_security_settings
+  for each row execute function private.platform_security_settings_audit();
 
 create or replace function private.platform_aal_ok() returns boolean language plpgsql stable security definer set search_path = '' as $f$
 begin

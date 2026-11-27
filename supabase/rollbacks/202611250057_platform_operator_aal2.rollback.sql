@@ -69,3 +69,4 @@ drop function if exists private.set_platform_aal2_required(boolean, text);
 drop function if exists private.platform_aal_ok();
 drop table if exists iam.platform_security_settings;
 drop function if exists private.platform_security_settings_guard();
+drop function if exists private.platform_security_settings_audit();
