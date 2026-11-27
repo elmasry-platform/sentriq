@@ -2,10 +2,10 @@
 -- The test embeds the rollback (to rebuild the old state, because CI applies every migration first) and the migration
 -- (checked against the files by scripts/check_058_embed.sh). Rolled back at the end.
 begin;
-select extensions.plan(156);
+select extensions.plan(167);
 grant usage on schema extensions to anon, authenticated, service_role;
 grant execute on all functions in schema extensions to anon, authenticated, service_role;
-insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at) select ('e0000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','m-'||i||'@example.test',now(),now(),now() from generate_series(1,7) i;
+insert into auth.users(id,aud,role,email,email_confirmed_at,created_at,updated_at) select ('e0000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'authenticated','authenticated','m-'||i||'@example.test',now(),now(),now() from generate_series(1,8) i;
 select private.bootstrap_platform_owner('e0000000-0000-0000-0000-000000000001');
 insert into core.tenants(id,name,created_by) values ('e1000000-0000-0000-0000-00000000000a','M58','e0000000-0000-0000-0000-000000000001'),('e1000000-0000-0000-0000-00000000000b','M58 other','e0000000-0000-0000-0000-000000000001');
 insert into iam.memberships(id,tenant_id,user_id,member_role,email,status) values
@@ -13,6 +13,7 @@ insert into iam.memberships(id,tenant_id,user_id,member_role,email,status) value
 ('e2000000-0000-0000-0000-000000000003','e1000000-0000-0000-0000-00000000000a','e0000000-0000-0000-0000-000000000003','company_superadmin','m-3@example.test','active'),
 ('e2000000-0000-0000-0000-000000000004','e1000000-0000-0000-0000-00000000000a','e0000000-0000-0000-0000-000000000004','employee','m-4@example.test','active'),
 ('e2000000-0000-0000-0000-000000000005','e1000000-0000-0000-0000-00000000000a','e0000000-0000-0000-0000-000000000005','company_superadmin','m-5@example.test','active'),
+('e2000000-0000-0000-0000-000000000008','e1000000-0000-0000-0000-00000000000a','e0000000-0000-0000-0000-000000000008','company_superadmin','m-8@example.test','active'),
 ('e2000000-0000-0000-0000-000000000006','e1000000-0000-0000-0000-00000000000b','e0000000-0000-0000-0000-000000000006','company_superadmin','m-6@example.test','active');
 insert into core.entitlement_grants(tenant_id,module_key,starts_at,expires_at,granted_by,reason,billing_treatment) values ('e1000000-0000-0000-0000-00000000000a','hse',now()-interval '1 day',now()+interval '30 days','e0000000-0000-0000-0000-000000000001','M58 fixture','complimentary'),('e1000000-0000-0000-0000-00000000000b','hse',now()-interval '1 day',now()+interval '30 days','e0000000-0000-0000-0000-000000000001','M58 fixture','complimentary');
 -- u1 platform owner, u2/u3/u5 company superadmins of A (author, approver, third), u4 employee of A, u6 superadmin of B
@@ -39,6 +40,7 @@ create view api.v_forms with (security_invoker=true) as
 grant select on api.v_forms to authenticated;
 drop function if exists api.form_compare_versions(uuid, integer, integer);
 drop function if exists api.form_clone(uuid, jsonb);
+drop function if exists api.form_set_status(uuid, integer, text, text);
 drop function if exists api.form_set_status(uuid, integer, text);
 drop function if exists api.form_approve_publish(uuid, integer);
 drop function if exists api.form_return_to_draft(uuid, integer, text);
@@ -46,6 +48,8 @@ drop function if exists api.form_submit_for_approval(uuid, integer, text);
 drop function if exists api.form_save_draft(uuid, integer, jsonb, text, jsonb, text[]);
 drop function if exists api.form_create_draft(uuid, jsonb, text, jsonb, text[]);
 drop function if exists api.form_validate(uuid, jsonb, text[], jsonb);
+drop trigger if exists z_form_status_audit on hse.form_templates;
+drop function if exists private.audit_form_status();
 drop trigger if exists form_version_published on hse.form_versions;
 drop trigger if exists form_version_insert_guard on hse.form_versions;
 drop trigger if exists form_template_write_guard on hse.form_templates;
@@ -338,7 +342,7 @@ begin
   select * into t from hse.form_templates where id = new.template_id and tenant_id = new.tenant_id for update;
   if not found then raise exception 'form_not_found' using errcode = '22023'; end if;
   if t.status <> 'in_approval' then raise exception 'form_not_in_approval' using errcode = '22023'; end if;
-  if v_uid = t.submitted_by or v_uid = t.last_edited_by then raise exception 'form_approver_must_differ_from_author' using errcode = '42501'; end if;
+  if v_uid = t.submitted_by or v_uid = t.last_edited_by or v_uid = t.created_by then raise exception 'form_approver_must_differ_from_author' using errcode = '42501'; end if;
   v_errs := private.validate_form_definition(t.title, t.languages, t.definition);
   if jsonb_array_length(v_errs) > 0 then raise exception 'form_validation_failed' using errcode = '22023', detail = v_errs::text; end if;
   new.version := coalesce((select max(v.version) from hse.form_versions v where v.template_id = t.id), 0) + 1;
@@ -438,7 +442,8 @@ begin
   return v_version;
 end $f$;
 
-create or replace function api.form_set_status(p_id uuid, p_expected_revision integer, p_status text) returns void
+drop function if exists api.form_set_status(uuid, integer, text);
+create or replace function api.form_set_status(p_id uuid, p_expected_revision integer, p_status text, p_reason text default null) returns void
 language plpgsql set search_path = '' as $f$
 declare t hse.form_templates;
 begin
@@ -449,6 +454,7 @@ begin
     raise exception 'form_not_found' using errcode = '22023';
   end if;
   if t.revision <> p_expected_revision then raise exception 'form_revision_conflict' using errcode = '40001'; end if;
+  perform set_config('sentriq.form_reason', coalesce(nullif(btrim(p_reason), ''), ''), true);
   update hse.form_templates set status = p_status where id = p_id;
 end $f$;
 
@@ -515,6 +521,31 @@ begin
   if v_snap is null then raise exception 'form_version_not_found' using errcode = '22023'; end if;
   return v_snap;
 end $f$;
+
+-- Audit of status changes: who, what, from and to, when, why, and the approver. Written for every status change,
+-- including direct table updates. audit.events is append-only (immutable trigger, authenticated has select only).
+create or replace function private.audit_form_status() returns trigger language plpgsql security definer set search_path = '' as $f$
+declare v_reason text; v_approver uuid; v_version int;
+begin
+  if new.status is not distinct from old.status then return null; end if;
+  v_reason := coalesce(
+    case when old.status = 'in_approval' and new.status = 'draft' then new.return_reason end,
+    case when old.status = 'draft' and new.status = 'in_approval' then new.change_note end,
+    nullif(current_setting('sentriq.form_reason', true), ''));
+  if old.status = 'in_approval' and new.status = 'published' then
+    select v.approved_by, v.version into v_approver, v_version from hse.form_versions v where v.template_id = new.id order by v.version desc limit 1;
+  end if;
+  insert into audit.events(tenant_id, actor_user_id, actor_membership_id, scope_kind, action_key, record_type, record_id, summary)
+  values (new.tenant_id, auth.uid(), private.current_membership_id(new.tenant_id), 'tenant',
+    'hse.form_templates.status.' || new.status, 'hse.form_templates', new.id,
+    jsonb_build_object('from', old.status, 'to', new.status, 'revision', new.revision, 'reason', v_reason,
+      'approver', v_approver, 'version', v_version, 'submitted_by', new.submitted_by));
+  return null;
+end $f$;
+revoke all on function private.audit_form_status() from public, anon, authenticated;
+drop trigger if exists z_form_status_audit on hse.form_templates;
+create trigger z_form_status_audit after update on hse.form_templates
+  for each row when (old.status is distinct from new.status) execute function private.audit_form_status();
 
 do $g$
 declare r record;
@@ -675,13 +706,15 @@ select extensions.throws_ok($$select api.form_approve_publish(current_setting('t
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000005',true); select set_config('request.jwt.claims','',true); set local role authenticated;
 select extensions.throws_ok($$select api.form_approve_publish(current_setting('t58.d')::uuid,2)$$, '42501', 'form_approver_must_differ_from_author', 'L62 the submitter cannot approve');
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000002',true); select set_config('request.jwt.claims','',true); set local role authenticated;
-select extensions.is((api.form_approve_publish(current_setting('t58.d')::uuid,2)), 1, 'L63 the original creator, who did neither, can approve');
+select extensions.throws_ok($$select api.form_approve_publish(current_setting('t58.d')::uuid,2)$$, '42501', 'form_approver_must_differ_from_author', 'L63 the original creator, who neither edited last nor submitted, cannot approve');
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000008',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.is((api.form_approve_publish(current_setting('t58.d')::uuid,2)), 1, 'L63a positive control: a fourth person who did none of it approves');
 reset role;
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000002',true); select set_config('request.jwt.claims','',true); set local role authenticated;
 select extensions.is(((select languages::text||'-'||"changeNote"||'-'||"lastEditedBy"::text||'-'||"submittedBy"::text||'-'||status||'-'||"isLibrary"::text from api.v_forms where id=current_setting('t58.d')::uuid)), '{en,ar}-second person edited, third person submits-e0000000-0000-0000-0000-000000000003-e0000000-0000-0000-0000-000000000005-published-false', 'W01 api.v_forms exposes languages, change note, last editor, submitter, library flag');
 select extensions.is(((select ("returnReason" is null)::text||'-'||("submittedAt" is not null)::text||'-'||("reviewDueDate" is null)::text from api.v_forms where id=current_setting('t58.d')::uuid)), 'true-true-true', 'W02 api.v_forms exposes return reason, submitted time and review due date');
 select extensions.is(((select count(*)::int from information_schema.columns where table_schema='api' and table_name='v_forms')), 17, 'W03 api.v_forms keeps the 9 old columns and adds 8');
-select extensions.is(((select version::text||'-'||length("snapshotHash")::text||'-'||"approvedBy"::text||'-'||"submittedBy"::text||'-'||("approvedAt" is not null)::text from api.v_form_versions where "templateId"=current_setting('t58.d')::uuid)), '1-64-e0000000-0000-0000-0000-000000000002-e0000000-0000-0000-0000-000000000005-true', 'W04 api.v_form_versions lists version, hash, approver, submitter and approval time');
+select extensions.is(((select version::text||'-'||length("snapshotHash")::text||'-'||"approvedBy"::text||'-'||"submittedBy"::text||'-'||("approvedAt" is not null)::text from api.v_form_versions where "templateId"=current_setting('t58.d')::uuid)), '1-64-e0000000-0000-0000-0000-000000000008-e0000000-0000-0000-0000-000000000005-true', 'W04 api.v_form_versions lists version, hash, approver, submitter and approval time');
 select extensions.is(((select count(*)::int from information_schema.columns where table_schema='api' and table_name='v_form_versions' and column_name='snapshot')), 0, 'W05 the version list has no snapshot body column');
 select extensions.is(((api.form_version_get(current_setting('t58.d')::uuid,1)->'definition' = extensions.d58b())::text||'-'||(api.form_version_get(current_setting('t58.d')::uuid,1)->>'change_note')), 'true-second person edited, third person submits', 'W06 api.form_version_get returns the stored snapshot');
 select extensions.throws_ok($$select api.form_version_get(current_setting('t58.d')::uuid,9)$$, '22023', 'form_version_not_found', 'W07 unknown version is refused');
@@ -714,13 +747,13 @@ reset role; set local statement_timeout=0;
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000002',true); select set_config('request.jwt.claims','',true); set local role authenticated;
 select set_config('t58.r', api.form_create_draft('e1000000-0000-0000-0000-00000000000a','{"en":"Rev","ar":"مراجعة"}','Safety',extensions.d58())::text, true);
 select extensions.throws_ok($$select api.form_set_status(current_setting('t58.r')::uuid,7,'archived')$$, '40001', 'form_revision_conflict', 'E01 set_status with a stale revision is refused');
-select extensions.lives_ok($$select api.form_set_status(current_setting('t58.r')::uuid,1,'archived')$$, 'E02 set_status with the right revision works');
+select extensions.lives_ok($$select api.form_set_status(current_setting('t58.r')::uuid,1,'archived','no longer needed')$$, 'E02 set_status with the right revision works');
 select extensions.throws_ok($$select api.form_return_to_draft(current_setting('t58.r')::uuid,7,'x reason')$$, '40001', 'form_revision_conflict', 'E03 return_to_draft with a stale revision is refused');
 reset role; select set_config('request.jwt.claim.sub','',true); select set_config('request.jwt.claims','',true);
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000004',true); select set_config('request.jwt.claims','',true); set local role authenticated;
 select extensions.is(((select count(*)::int from api.v_forms)), 0, 'E04 the employee without forms.read sees no templates');
 select extensions.throws_ok($$select api.form_validate('e1000000-0000-0000-0000-00000000000a','{"en":"T"}','{en,ar}','{}')$$, '42501', 'form_not_permitted', 'E05 form_validate refuses an employee without forms.read');
-select extensions.throws_ok($$select api.form_create_draft('e1000000-0000-0000-0000-00000000000a','{"en":"X","ar":"س"}','c','{}')$$, '42501', null, 'E06 form_create_draft refuses the employee');
+select extensions.throws_ok($$select api.form_create_draft('e1000000-0000-0000-0000-00000000000a','{"en":"X","ar":"س"}','c','{}')$$, '42501', 'new row violates row-level security policy for table "form_templates"', 'E06 form_create_draft refuses the employee: the refusal comes from the insert policy on form_templates, the function has no check of its own');
 select extensions.throws_ok($$select api.form_save_draft(current_setting('t58.d')::uuid,3,'{"en":"X","ar":"س"}','c','{}')$$, '22023', 'form_not_found', 'E07 form_save_draft: the employee cannot see the template (not found, no existence leak)');
 select extensions.throws_ok($$select api.form_submit_for_approval(current_setting('t58.d')::uuid,3,'n')$$, '22023', 'form_not_found', 'E08 form_submit_for_approval: not found for the employee');
 select extensions.throws_ok($$select api.form_return_to_draft(current_setting('t58.d')::uuid,3,'r')$$, '22023', 'form_not_found', 'E09 form_return_to_draft: not found for the employee');
@@ -762,6 +795,20 @@ insert into hse.form_versions(tenant_id,template_id,version,snapshot,published_b
 reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000003',true); select set_config('request.jwt.claims','',true); set local role authenticated;
 select extensions.lives_ok($$update hse.form_templates set status='published' where id='e5000000-0000-0000-0000-00000000000c'$$, 'L67 positive control: a version approved by the caller in the same step allows publish');
 reset role; select set_config('request.jwt.claim.sub','',true); select set_config('request.jwt.claims','',true);
+select extensions.is((array_to_string(private.form_runnable_types(), ',')), 'short_text,long_text,integer,decimal,date,time,datetime,boolean,single_select,multi_select,photo,file,attestation,signature,instruction,gps,calculated', 'T01 the runnable types are pinned (scripts/check_form_type_parity.py compares them with the runner)');
+select extensions.is(((select array_to_string(array(select t from unnest(private.form_field_types()) t where t <> all (private.form_runnable_types())), ','))), 'reference,user,site,location,barcode_qr,repeat_group', 'T02 exactly these builder types are blocked at publish');
+reset role; select set_config('request.jwt.claim.sub','',true); select set_config('request.jwt.claims','',true);
+select extensions.is(((select s->>'from'||'>'||(s->>'to')||'|'||(s->>'reason') from (select summary s from audit.events where record_id=current_setting('t58.a')::uuid and action_key='hse.form_templates.status.draft' and summary->>'reason'='fix the wording') x)), 'in_approval>draft|fix the wording', 'AU01 a return is audited with old status, new status and the reason');
+select extensions.is(((select count(*)::int from audit.events where record_id=current_setting('t58.a')::uuid and action_key='hse.form_templates.status.retired' and actor_user_id is not null and actor_membership_id is not null and created_at is not null)), 1, 'AU02 a retire is audited with actor, membership and time');
+select extensions.is(((select summary->>'reason' from audit.events where record_id=current_setting('t58.d')::uuid and action_key='hse.form_templates.status.in_approval')), 'second person edited, third person submits', 'AU03 a submit is audited with the change note as reason');
+select extensions.is(((select actor_user_id::text from audit.events where record_id=current_setting('t58.d')::uuid and action_key='hse.form_templates.status.in_approval')), 'e0000000-0000-0000-0000-000000000005', 'AU04 the submit audit names the submitter as actor');
+select extensions.is(((select (summary->>'approver')||'-'||(summary->>'from')||'-'||(summary->>'version')||'-'||actor_user_id::text from audit.events where record_id=current_setting('t58.d')::uuid and action_key='hse.form_templates.status.published')), 'e0000000-0000-0000-0000-000000000008-in_approval-1-e0000000-0000-0000-0000-000000000008', 'AU05 a publish is audited with the approver, the old status, the version and the actor');
+select extensions.is(((select summary->>'reason' from audit.events where record_id=current_setting('t58.r')::uuid and action_key='hse.form_templates.status.archived')), 'no longer needed', 'AU06 an archive keeps the reason given to form_set_status');
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000003',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.throws_ok($$update audit.events set summary='{}' where record_id=current_setting('t58.d')::uuid$$, '42501', null, 'AU07 an app role cannot update audit events');
+reset role; select set_config('request.jwt.claim.sub','e0000000-0000-0000-0000-000000000003',true); select set_config('request.jwt.claims','',true); set local role authenticated;
+select extensions.throws_ok($$delete from audit.events where record_id=current_setting('t58.d')::uuid$$, '42501', null, 'AU08 an app role cannot delete audit events');
+reset role;
 -- BEGIN EMBEDDED 058 ROLLBACK
 -- Rollback of 058: drop the API, guards and helpers, map the new statuses back (in_approval -> draft, retired -> archived),
 -- restore the old status check, drop the added columns (their data is lost). Existing published versions and templates stay.
@@ -774,6 +821,7 @@ create view api.v_forms with (security_invoker=true) as
 grant select on api.v_forms to authenticated;
 drop function if exists api.form_compare_versions(uuid, integer, integer);
 drop function if exists api.form_clone(uuid, jsonb);
+drop function if exists api.form_set_status(uuid, integer, text, text);
 drop function if exists api.form_set_status(uuid, integer, text);
 drop function if exists api.form_approve_publish(uuid, integer);
 drop function if exists api.form_return_to_draft(uuid, integer, text);
@@ -781,6 +829,8 @@ drop function if exists api.form_submit_for_approval(uuid, integer, text);
 drop function if exists api.form_save_draft(uuid, integer, jsonb, text, jsonb, text[]);
 drop function if exists api.form_create_draft(uuid, jsonb, text, jsonb, text[]);
 drop function if exists api.form_validate(uuid, jsonb, text[], jsonb);
+drop trigger if exists z_form_status_audit on hse.form_templates;
+drop function if exists private.audit_form_status();
 drop trigger if exists form_version_published on hse.form_versions;
 drop trigger if exists form_version_insert_guard on hse.form_versions;
 drop trigger if exists form_template_write_guard on hse.form_templates;

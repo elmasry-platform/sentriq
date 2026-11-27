@@ -9,6 +9,7 @@ create view api.v_forms with (security_invoker=true) as
 grant select on api.v_forms to authenticated;
 drop function if exists api.form_compare_versions(uuid, integer, integer);
 drop function if exists api.form_clone(uuid, jsonb);
+drop function if exists api.form_set_status(uuid, integer, text, text);
 drop function if exists api.form_set_status(uuid, integer, text);
 drop function if exists api.form_approve_publish(uuid, integer);
 drop function if exists api.form_return_to_draft(uuid, integer, text);
@@ -16,6 +17,8 @@ drop function if exists api.form_submit_for_approval(uuid, integer, text);
 drop function if exists api.form_save_draft(uuid, integer, jsonb, text, jsonb, text[]);
 drop function if exists api.form_create_draft(uuid, jsonb, text, jsonb, text[]);
 drop function if exists api.form_validate(uuid, jsonb, text[], jsonb);
+drop trigger if exists z_form_status_audit on hse.form_templates;
+drop function if exists private.audit_form_status();
 drop trigger if exists form_version_published on hse.form_versions;
 drop trigger if exists form_version_insert_guard on hse.form_versions;
 drop trigger if exists form_template_write_guard on hse.form_templates;

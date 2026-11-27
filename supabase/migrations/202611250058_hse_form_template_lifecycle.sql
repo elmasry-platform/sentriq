@@ -262,7 +262,7 @@ begin
   select * into t from hse.form_templates where id = new.template_id and tenant_id = new.tenant_id for update;
   if not found then raise exception 'form_not_found' using errcode = '22023'; end if;
   if t.status <> 'in_approval' then raise exception 'form_not_in_approval' using errcode = '22023'; end if;
-  if v_uid = t.submitted_by or v_uid = t.last_edited_by then raise exception 'form_approver_must_differ_from_author' using errcode = '42501'; end if;
+  if v_uid = t.submitted_by or v_uid = t.last_edited_by or v_uid = t.created_by then raise exception 'form_approver_must_differ_from_author' using errcode = '42501'; end if;
   v_errs := private.validate_form_definition(t.title, t.languages, t.definition);
   if jsonb_array_length(v_errs) > 0 then raise exception 'form_validation_failed' using errcode = '22023', detail = v_errs::text; end if;
   new.version := coalesce((select max(v.version) from hse.form_versions v where v.template_id = t.id), 0) + 1;
@@ -362,7 +362,8 @@ begin
   return v_version;
 end $f$;
 
-create or replace function api.form_set_status(p_id uuid, p_expected_revision integer, p_status text) returns void
+drop function if exists api.form_set_status(uuid, integer, text);
+create or replace function api.form_set_status(p_id uuid, p_expected_revision integer, p_status text, p_reason text default null) returns void
 language plpgsql set search_path = '' as $f$
 declare t hse.form_templates;
 begin
@@ -373,6 +374,7 @@ begin
     raise exception 'form_not_found' using errcode = '22023';
   end if;
   if t.revision <> p_expected_revision then raise exception 'form_revision_conflict' using errcode = '40001'; end if;
+  perform set_config('sentriq.form_reason', coalesce(nullif(btrim(p_reason), ''), ''), true);
   update hse.form_templates set status = p_status where id = p_id;
 end $f$;
 
@@ -439,6 +441,31 @@ begin
   if v_snap is null then raise exception 'form_version_not_found' using errcode = '22023'; end if;
   return v_snap;
 end $f$;
+
+-- Audit of status changes: who, what, from and to, when, why, and the approver. Written for every status change,
+-- including direct table updates. audit.events is append-only (immutable trigger, authenticated has select only).
+create or replace function private.audit_form_status() returns trigger language plpgsql security definer set search_path = '' as $f$
+declare v_reason text; v_approver uuid; v_version int;
+begin
+  if new.status is not distinct from old.status then return null; end if;
+  v_reason := coalesce(
+    case when old.status = 'in_approval' and new.status = 'draft' then new.return_reason end,
+    case when old.status = 'draft' and new.status = 'in_approval' then new.change_note end,
+    nullif(current_setting('sentriq.form_reason', true), ''));
+  if old.status = 'in_approval' and new.status = 'published' then
+    select v.approved_by, v.version into v_approver, v_version from hse.form_versions v where v.template_id = new.id order by v.version desc limit 1;
+  end if;
+  insert into audit.events(tenant_id, actor_user_id, actor_membership_id, scope_kind, action_key, record_type, record_id, summary)
+  values (new.tenant_id, auth.uid(), private.current_membership_id(new.tenant_id), 'tenant',
+    'hse.form_templates.status.' || new.status, 'hse.form_templates', new.id,
+    jsonb_build_object('from', old.status, 'to', new.status, 'revision', new.revision, 'reason', v_reason,
+      'approver', v_approver, 'version', v_version, 'submitted_by', new.submitted_by));
+  return null;
+end $f$;
+revoke all on function private.audit_form_status() from public, anon, authenticated;
+drop trigger if exists z_form_status_audit on hse.form_templates;
+create trigger z_form_status_audit after update on hse.form_templates
+  for each row when (old.status is distinct from new.status) execute function private.audit_form_status();
 
 do $g$
 declare r record;
